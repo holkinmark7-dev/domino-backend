@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from routers.services.memory import get_medical_events
+from .clarification_engine import match_owner_phrase, needs_clarification
+from .symptom_registry_v2 import SYMPTOM_REGISTRY
 
 CLINICAL_ENGINE_VERSION = "v1.0.0-FROZEN"
 
@@ -147,3 +149,63 @@ def apply_cross_symptom_override(pet_id: str, symptom_key: str, decision: dict) 
             decision["escalation"] = "HIGH"
 
     return decision
+
+
+def check_clarification_needed(
+    user_message: str,
+    extracted_symptoms: list,
+    species: str = "dog"
+) -> dict:
+    """
+    Проверяет нужен ли уточняющий вопрос перед ответом.
+
+    Возвращает:
+    {
+        "needed": True/False,
+        "question": "текст вопроса" или None,
+        "symptom_key": "ключ симптома" или None,
+        "all_symptoms": [список всех симптомов включая из фраз]
+    }
+
+    Логика:
+    1. Распознаём дополнительные симптомы из живой речи
+    2. Объединяем с extraction симптомами
+    3. Если есть хоть один auto_critical → clarification НЕ нужна
+    4. Если симптом один и он требует уточнения → вернуть вопрос
+    5. Если симптомов несколько → clarification НЕ нужна (и так достаточно данных)
+    """
+    # Шаг 1: распознаём фразы из живой речи
+    phrase_symptoms = match_owner_phrase(user_message)
+
+    # Шаг 2: объединяем все симптомы без дублей
+    all_symptoms = list(set(extracted_symptoms + phrase_symptoms))
+
+    # Шаг 3: проверяем есть ли auto_critical симптом
+    for symptom_key in all_symptoms:
+        symptom_data = SYMPTOM_REGISTRY.get(symptom_key, {})
+        if symptom_data.get("auto_critical", False):
+            return {
+                "needed": False,
+                "question": None,
+                "symptom_key": None,
+                "all_symptoms": all_symptoms
+            }
+
+    # Шаг 4: если симптом один — проверяем нужно ли уточнение
+    if len(all_symptoms) == 1:
+        question = needs_clarification(all_symptoms[0])
+        if question:
+            return {
+                "needed": True,
+                "question": question,
+                "symptom_key": all_symptoms[0],
+                "all_symptoms": all_symptoms
+            }
+
+    # Шаг 5: несколько симптомов или нет вопроса — уточнение не нужно
+    return {
+        "needed": False,
+        "question": None,
+        "symptom_key": None,
+        "all_symptoms": all_symptoms
+    }

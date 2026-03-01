@@ -54,6 +54,7 @@ SYMPTOM_REGISTRY: Dict[str, Any] = {
         "time_thresholds": [
             {"hours": 6,  "species": "puppy",  "escalation": "HIGH"},
             {"hours": 6,  "species": "kitten",  "escalation": "HIGH"},
+            {"hours": 12, "species": "all",    "escalation": "MODERATE"},
             {"hours": 12, "species": "cat",    "escalation": "HIGH"},
             {"hours": 24, "species": "dog",    "escalation": "HIGH"},
         ],
@@ -259,7 +260,8 @@ SYMPTOM_REGISTRY: Dict[str, Any] = {
         "species_override": {"cat": "HIGH"},
         "time_thresholds": [
             {"hours": 12, "species": "cat", "escalation": "CRITICAL"},
-            {"hours": 24, "species": "dog", "escalation": "CRITICAL"},
+            {"hours": 4,  "species": "dog", "escalation": "HIGH"},
+            {"hours": 12, "species": "dog", "escalation": "CRITICAL"},
         ],
         "auto_critical": False,
         "clarify_first": "Есть ли хоть капли мочи? Сколько часов без мочи?",

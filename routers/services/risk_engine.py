@@ -17,6 +17,9 @@ Rules:
 
 from .symptom_registry_v2 import SYMPTOM_REGISTRY, escalate_min, ESCALATION_ORDER as _V2_ESCALATION_ORDER
 from .combo_matrix import apply_combo_matrix
+from .breed_risk_modifiers import apply_breed_modifiers
+from .age_modifiers import apply_age_modifiers
+from typing import Optional
 
 ESCALATION_ORDER = {
     "LOW": 0,
@@ -42,7 +45,13 @@ def calculate_risk_score(
     stats: dict,
     blood: bool,
     episode_phase: str,
-    has_combo: bool
+    has_combo: bool,
+    duration_hours: float = None,
+    species: str = "dog",
+    age_category: str = "adult",
+    breed: Optional[str] = None,
+    weight_kg: Optional[float] = None,
+    age_years: Optional[float] = None,
 ) -> dict:
     risk_score = 0
 
@@ -84,7 +93,97 @@ def calculate_risk_score(
         if combo_reason:
             calculated_escalation = final_escalation
 
+    # Применяем временные пороги
+    if symptom_key and duration_hours:
+        calculated_escalation = apply_time_thresholds(
+            symptom_key=symptom_key,
+            current_escalation=calculated_escalation,
+            duration_hours=duration_hours,
+            species=species,
+            age_category=age_category,
+        )
+
+    # Применяем модификаторы породы и веса
+    if breed or weight_kg:
+        _symptoms_for_breed = [symptom_key] if symptom_key else []
+        calculated_escalation, breed_reason = apply_breed_modifiers(
+            detected_symptoms=_symptoms_for_breed,
+            current_escalation=calculated_escalation,
+            breed=breed,
+            weight_kg=weight_kg,
+            species=species,
+        )
+
+    # Применяем возрастные модификаторы
+    if age_years is not None:
+        _symptoms_for_age = [symptom_key] if symptom_key else []
+        calculated_escalation, age_reason = apply_age_modifiers(
+            detected_symptoms=_symptoms_for_age,
+            current_escalation=calculated_escalation,
+            age_years=age_years,
+            species=species,
+        )
+
     return {
         "risk_score": risk_score,
         "calculated_escalation": calculated_escalation,
     }
+
+
+def apply_time_thresholds(
+    symptom_key: str,
+    current_escalation: str,
+    duration_hours: float,
+    species: str = "dog",
+    age_category: str = "adult"
+) -> str:
+    """
+    Применяет временные пороги к escalation.
+    Эскалация никогда не понижается — только повышается.
+
+    Аргументы:
+        symptom_key: нормализованный ключ симптома ("vomiting", "anorexia" и т.д.)
+        current_escalation: текущий уровень ("LOW"/"MODERATE"/"HIGH"/"CRITICAL")
+        duration_hours: сколько часов длится симптом (из extraction)
+        species: "dog" или "cat"
+        age_category: "puppy", "kitten", "adult", "senior"
+
+    Возвращает: новый уровень escalation (>= current_escalation)
+    """
+    from .symptom_registry_v2 import SYMPTOM_REGISTRY, escalate_min
+
+    # Если нет данных о времени — ничего не меняем
+    if duration_hours is None or duration_hours <= 0:
+        return current_escalation
+
+    # Если симптом не в реестре — ничего не меняем
+    symptom_data = SYMPTOM_REGISTRY.get(symptom_key)
+    if not symptom_data:
+        return current_escalation
+
+    thresholds = symptom_data.get("time_thresholds", [])
+    if not thresholds:
+        return current_escalation
+
+    result = current_escalation
+
+    for threshold in thresholds:
+        threshold_hours = threshold.get("hours", 0)
+        threshold_species = threshold.get("species", "all")
+        threshold_escalation = threshold.get("escalation", "LOW")
+
+        # Проверяем подходит ли этот порог по виду/возрасту
+        species_match = (
+            threshold_species == "all"
+            or threshold_species == species
+            or threshold_species == age_category  # puppy, kitten
+        )
+
+        if not species_match:
+            continue
+
+        # Если время превышает порог — применяем escalation
+        if duration_hours >= threshold_hours:
+            result = escalate_min(result, threshold_escalation)
+
+    return result

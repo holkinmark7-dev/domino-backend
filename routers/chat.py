@@ -17,6 +17,7 @@ from routers.services.clinical_engine import (
     get_symptom_stats,
     build_clinical_decision,
     apply_cross_symptom_override,
+    check_clarification_needed,
 )
 from routers.services.risk_engine import calculate_risk_score, ESCALATION_ORDER
 from routers.services.episode_manager import process_event, update_episode_escalation
@@ -288,6 +289,71 @@ def create_chat_message(message: ChatMessage):
         _next_question = _onboarding["next_question"]
     else:
         _next_question = None
+
+    # ── CLARIFICATION CHECK ──────────────────────────────────────────
+    # Проверяем нужен ли уточняющий вопрос перед генерацией ответа
+    if _message_mode == "CLINICAL":
+        _extracted_symptoms = []
+        if isinstance(structured_data, dict) and "error" not in structured_data:
+            _sym = structured_data.get("symptom")
+            if _sym:
+                _extracted_symptoms = [_sym]
+
+        _clarif_pet = get_pet_profile(pet_id=message.pet_id) or {}
+        _clarif_species = (_clarif_pet.get("species") or "dog").lower()
+
+        clarification = check_clarification_needed(
+            user_message=message.message,
+            extracted_symptoms=_extracted_symptoms,
+            species=_clarif_species
+        )
+
+        if clarification["needed"]:
+            # Skip clarification if extraction already has rich detail
+            _skip_clarification = False
+            if isinstance(structured_data, dict):
+                if isinstance(structured_data.get("urgency_score"), int) and structured_data["urgency_score"] >= 2:
+                    _skip_clarification = True
+                if structured_data.get("blood") is True:
+                    _skip_clarification = True
+                if structured_data.get("refusing_water") is True:
+                    _skip_clarification = True
+                if (structured_data.get("lethargy_level") or "none") != "none":
+                    _skip_clarification = True
+                if structured_data.get("temperature_value") is not None:
+                    _skip_clarification = True
+                if isinstance(structured_data.get("duration_hours"), (int, float)):
+                    _skip_clarification = True
+                if isinstance(structured_data.get("severity_hints"), list) and len(structured_data["severity_hints"]) > 0:
+                    _skip_clarification = True
+
+        if clarification["needed"] and not _skip_clarification:
+            # Сохраняем уточняющий вопрос в чат
+            _clarif_response = clarification["question"]
+            supabase.table("chat").insert({
+                "user_id": message.user_id,
+                "pet_id": message.pet_id,
+                "message": _clarif_response,
+                "role": "ai",
+            }).execute()
+
+            return {
+                "ai_response": _clarif_response,
+                "structured_data": {
+                    "escalation": "PENDING",
+                    "symptom_key": clarification["symptom_key"],
+                    "clarification": True
+                },
+                "risk_level": None,
+                "chat_saved": [],
+                "debug": {
+                    "clarification_triggered": True,
+                    "symptom_key": clarification["symptom_key"],
+                    "all_symptoms": clarification["all_symptoms"],
+                    "mode": "CLARIFICATION"
+                }
+            }
+    # ── END CLARIFICATION CHECK ──────────────────────────────────────
 
     # Early lethargy extraction — used in clinical routing and systemic state layer
     _lethargy_level = "none"

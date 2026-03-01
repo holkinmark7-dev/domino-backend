@@ -211,6 +211,114 @@ COMBO_MATRIX: List[Dict] = [
         "escalation": "CRITICAL",
         "reason": "Критическое системное состояние",
     },
+
+    # ── НОВЫЕ КОМБО ПО РЕЗУЛЬТАТАМ ВЕТЕРИНАРНОЙ ПРОВЕРКИ (М8) ──
+
+    # Судорога + рвота → CRITICAL (аспирация, интоксикация)
+    {
+        "symptoms": ["seizure_long", "vomiting"],
+        "escalation": "CRITICAL",
+        "reason": "Судорога + рвота — риск аспирационной пневмонии или интоксикации",
+    },
+
+    # Травма + вялость → CRITICAL (внутреннее кровотечение)
+    {
+        "symptoms": ["trauma", "lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Травма + вялость — возможное внутреннее кровотечение",
+    },
+    {
+        "symptoms": ["trauma", "severe_lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Травма + сильная вялость — внутреннее кровотечение",
+    },
+
+    # Одышка + синюшность → CRITICAL (дыхательная недостаточность)
+    {
+        "symptoms": ["dyspnea", "cyanosis"],
+        "escalation": "CRITICAL",
+        "reason": "Одышка + синюшность = острая дыхательная недостаточность",
+    },
+    {
+        "symptoms": ["labored_breathing", "cyanosis"],
+        "escalation": "CRITICAL",
+        "reason": "Затруднённое дыхание + синюшность = критическая гипоксия",
+    },
+
+    # Кашель + одышка → CRITICAL
+    {
+        "symptoms": ["cough", "dyspnea"],
+        "escalation": "CRITICAL",
+        "reason": "Кашель + одышка — острая дыхательная патология",
+    },
+    {
+        "symptoms": ["cough", "labored_breathing"],
+        "escalation": "HIGH",
+        "reason": "Кашель + затруднённое дыхание — требует срочного осмотра сегодня",
+    },
+
+    # Внезапная слепота у кошки → CRITICAL (гипертония, тромбоэмболия)
+    {
+        "symptoms": ["sudden_blindness", "disorientation"],
+        "escalation": "CRITICAL",
+        "reason": "Внезапная слепота + дезориентация у кошки — гипертония или тромбоэмболия",
+        "species": "cat",
+    },
+
+    # Острый живот → CRITICAL
+    {
+        "symptoms": ["abdominal_pain", "abdominal_distension"],
+        "escalation": "CRITICAL",
+        "reason": "Боль + вздутие живота — острая хирургическая патология",
+    },
+
+    # Кот-самец + мочевые симптомы → ближе к CRITICAL
+    {
+        "symptoms": ["urinary_straining", "lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Кот: задержка мочи + вялость = уремия, срочно",
+        "species": "cat",
+    },
+    {
+        "symptoms": ["frequent_urination", "lethargy"],
+        "escalation": "HIGH",
+        "reason": "Кот: частое мочеиспускание + вялость = обструкция под вопросом",
+        "species": "cat",
+    },
+
+    # Температура 40-41 + вялость → CRITICAL (уточнение от ветеринара)
+    {
+        "symptoms": ["fever", "lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Высокая температура + вялость = тяжёлая инфекция или сепсис",
+    },
+    {
+        "symptoms": ["fever", "severe_lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Лихорадка + сильная вялость = системная патология",
+    },
+
+    # Рвота + вялость (выраженная) → CRITICAL
+    {
+        "symptoms": ["vomiting", "severe_lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Рвота + сильная вялость — системное поражение",
+    },
+
+    # Диарея + мелена → CRITICAL (чёрный стул = кровотечение ЖКТ)
+    {
+        "symptoms": ["diarrhea", "melena"],
+        "escalation": "CRITICAL",
+        "reason": "Диарея + мелена = кровотечение в верхних отделах ЖКТ",
+    },
+
+    # Отказ от еды + вялость у кошки → CRITICAL
+    {
+        "symptoms": ["anorexia", "lethargy"],
+        "escalation": "CRITICAL",
+        "reason": "Кошка: отказ от еды + вялость = риск липидоза печени",
+        "species": "cat",
+    },
 ]
 
 
