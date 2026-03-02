@@ -175,33 +175,95 @@ def upsert_pet_medical_profile(pet_id: str, fields: dict):
     return data.data
 
 
-def get_onboarding_status(pet_id: str) -> dict:
+def get_onboarding_status(pet_id: str, user_id: str = None) -> dict:
     """
-    Проверяет заполнены ли обязательные поля профиля.
-    Возвращает: {complete: bool, missing: list[str], next_question: str}
+    Возвращает статус онбординга.
+
+    Обязательные поля (нельзя пропустить):
+      species, name, gender, neutered, age — из таблицы pets
+
+    Необязательные поля (можно пропустить):
+      photo, breed, color, features, chip_id, stamp_id
+
+    Поле считается заполненным если:
+      - значение не None, ИЛИ
+      - {field}_skipped = True
     """
+
+    # Порядок обязательных шагов онбординга
+    REQUIRED_FIELDS = ["species", "name", "gender", "neutered", "age"]
+
+    # Необязательные поля — предлагаются после обязательных
+    OPTIONAL_FIELDS = ["photo", "breed", "color", "features", "chip_id", "stamp_id"]
+
     profile = get_pet_profile(pet_id)
     if not profile:
-        return {"complete": False, "missing": ["all"], "next_question": "name"}
+        return {"complete": False, "next_question": "species", "phase": "required"}
 
-    missing = []
+    # Проверяем обязательные поля
+    for field in REQUIRED_FIELDS:
+        skipped = profile.get(f"{field}_skipped", False)
+        if field == "neutered":
+            has_value = profile.get("neutered") is not None
+        elif field == "age":
+            has_value = bool(profile.get("birth_date") or profile.get("age_years"))
+        else:
+            has_value = bool(profile.get(field))
+        if not has_value and not skipped:
+            return {
+                "complete": False,
+                "next_question": field,
+                "phase": "required"
+            }
 
-    if not profile.get("name"):
-        missing.append("name")
-    if not profile.get("species"):
-        missing.append("species")
-    if not profile.get("gender"):
-        missing.append("gender")
-    if profile.get("neutered") is None:
-        missing.append("neutered")
-    if not profile.get("birth_date") and not profile.get("age_years"):
-        missing.append("age")
+    # Все обязательные заполнены — проверяем необязательные
+    for field in OPTIONAL_FIELDS:
+        val = profile.get(field) if field != "photo" else profile.get("photo_url")
+        skipped = profile.get(f"{field}_skipped", False)
+        if val is None and not skipped:
+            return {
+                "complete": False,
+                "next_question": field,
+                "phase": "optional"
+            }
 
-    # Следующий вопрос — первый незаполненный
-    next_q = missing[0] if missing else None
+    # Всё заполнено или пропущено
+    return {"complete": True, "next_question": None, "phase": "done"}
 
-    return {
-        "complete": len(missing) == 0,
-        "missing": missing,
-        "next_question": next_q
-    }
+
+def get_owner_name(user_id: str) -> str | None:
+    """Возвращает имя владельца из таблицы users."""
+    try:
+        result = supabase.table("users").select("owner_name").eq("id", user_id).single().execute()
+        return result.data.get("owner_name") if result.data else None
+    except Exception:
+        return None
+
+
+def save_owner_name(user_id: str, name: str) -> bool:
+    """Сохраняет имя владельца."""
+    try:
+        supabase.table("users").update({"owner_name": name}).eq("id", user_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_user_flags(user_id: str) -> dict:
+    """Возвращает flags из таблицы users."""
+    try:
+        result = supabase.table("users").select("flags").eq("id", user_id).single().execute()
+        return result.data.get("flags") or {} if result.data else {}
+    except Exception:
+        return {}
+
+
+def update_user_flags(user_id: str, flags: dict) -> bool:
+    """Обновляет flags в таблице users (merge)."""
+    try:
+        current = get_user_flags(user_id)
+        current.update(flags)
+        supabase.table("users").update({"flags": current}).eq("id", user_id).execute()
+        return True
+    except Exception:
+        return False

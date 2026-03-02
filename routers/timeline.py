@@ -1,10 +1,13 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
+from dateutil.relativedelta import relativedelta
 from collections import Counter
 import calendar
+
+from routers.services.heatmap import heatmap_score
 
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -69,6 +72,21 @@ def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter:
     elif filter == "medication_started":
         filtered_days = [d for d in filtered_days if d.get("medication_started")]
 
+    # Build calendar_index from all rows (not filtered)
+    calendar_index = {}
+    for d in rows.data:
+        d_date = d.get("date")
+        if not d_date:
+            continue
+        max_esc = d.get("max_escalation", "LOW")
+        calendar_index[d_date] = {
+            "has_events": True,
+            "max_escalation": max_esc,
+            "heatmap_score": heatmap_score(max_esc),
+            "event_count": d.get("event_count", 0),
+            "has_critical": max_esc == "CRITICAL",
+        }
+
     return {
         "year": _year,
         "month": _month,
@@ -76,6 +94,7 @@ def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter:
         "active_episodes": active_episodes.data,
         "has_events": len(rows.data) > 0,
         "recurring_patterns": recurring_patterns,
+        "calendar_index": calendar_index,
     }
 
 
@@ -179,6 +198,10 @@ def recalculate_day(pet_id: str, date_str: str = None):
         else:
             break
 
+    _event_count = len(events.data)
+    _has_critical = max_esc == "CRITICAL"
+    _heatmap = heatmap_score(max_esc)
+
     row = {
         "pet_id": pet_id,
         "date": _date,
@@ -192,6 +215,9 @@ def recalculate_day(pet_id: str, date_str: str = None):
         "vaccination": "vaccination" in all_types,
         "documents_count": documents_count,
         "healthy_days": healthy_days,
+        "event_count": _event_count,
+        "has_critical": _has_critical,
+        "heatmap_score": _heatmap,
         "updated_at": "now()",
     }
 
@@ -288,4 +314,63 @@ def add_clinical_action(pet_id: str, payload: ClinicalActionPayload):
     return {
         "status": "created",
         "event": result.data[0] if result.data else event_row,
+    }
+
+
+# ── Calendar heatmap endpoint ─────────────────────────────────────────────────
+@router.get("/calendar/{pet_id}")
+def get_calendar_heatmap(pet_id: str, months: int = Query(default=1, ge=1, le=6)):
+    today = date.today()
+    start_date = today - relativedelta(months=months)
+
+    rows = (
+        supabase.table("timeline_days")
+        .select("date, max_escalation, event_count")
+        .eq("pet_id", pet_id)
+        .gte("date", str(start_date))
+        .lte("date", str(today))
+        .order("date", desc=False)
+        .execute()
+    )
+
+    days = {}
+    total_events = 0
+    max_heatmap = 0
+    critical_days = 0
+
+    for d in rows.data:
+        d_date = d.get("date")
+        if not d_date:
+            continue
+
+        max_esc = d.get("max_escalation", "LOW")
+        _count = d.get("event_count", 0) or 0
+        _hs = heatmap_score(max_esc)
+        _is_critical = max_esc == "CRITICAL"
+
+        days[d_date] = {
+            "heatmap_score": _hs,
+            "event_count": _count,
+            "has_critical": _is_critical,
+        }
+
+        total_events += _count
+        if _hs > max_heatmap:
+            max_heatmap = _hs
+        if _is_critical:
+            critical_days += 1
+
+    return {
+        "pet_id": pet_id,
+        "period": {
+            "from": str(start_date),
+            "to": str(today),
+        },
+        "days": days,
+        "summary": {
+            "total_events": total_events,
+            "days_with_events": len(days),
+            "max_heatmap_score": max_heatmap,
+            "critical_days": critical_days,
+        },
     }

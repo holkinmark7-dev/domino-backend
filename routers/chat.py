@@ -8,7 +8,11 @@ from routers.services.memory import (
     get_pet_profile,
     get_medical_events,
     update_pet_profile,
-    get_onboarding_status
+    get_onboarding_status,
+    get_owner_name,
+    save_owner_name,
+    get_user_flags,
+    update_user_flags,
 )
 from routers.services.ai import generate_ai_response, extract_event_data
 from routers.services.symptom_registry import normalize_symptom
@@ -281,14 +285,45 @@ def create_chat_message(message: ChatMessage):
 
     # Message mode classification — CASUAL / PROFILE / CLINICAL
     _message_mode = _classify_message_mode(structured_data, message.message)
+    _next_question = None
+    _owner_name = None
+    _onboarding_phase = None
 
-    # ONBOARDING override — только если нет симптома и профиль не заполнен
-    _onboarding = get_onboarding_status(pet_id=message.pet_id)
-    if not _onboarding["complete"] and _message_mode != "CLINICAL":
-        _message_mode = "ONBOARDING"
-        _next_question = _onboarding["next_question"]
-    else:
-        _next_question = None
+    # ── REGISTRATION PROMPT CHECK ─────────────────────────────────────
+    _user_flags = get_user_flags(user_id=message.user_id)
+    if _user_flags.get("show_registration_prompt") and _message_mode != "CLINICAL":
+        _message_mode = "REGISTRATION_PROMPT"
+        update_user_flags(user_id=message.user_id, flags={"show_registration_prompt": False})
+
+    # ── OWNER NAME CHECK (ДО онбординга питомца) ─────────────────────
+    if _message_mode != "REGISTRATION_PROMPT":
+        _owner_name = get_owner_name(user_id=message.user_id)
+
+        if not _owner_name and _message_mode != "CLINICAL":
+            # Проверяем есть ли предыдущие AI-сообщения (уже спрашивали имя?)
+            _prior_ai_check = supabase.table("chat").select("id").eq("user_id", message.user_id).eq("role", "ai").limit(1).execute()
+            _already_asked = bool(_prior_ai_check.data)
+
+            if _already_asked:
+                # Пробуем распознать имя из текущего сообщения
+                _raw = message.message.strip()
+                if len(_raw) >= 2 and len(_raw) <= 40 and _raw.replace(" ", "").replace("-", "").isalpha():
+                    save_owner_name(user_id=message.user_id, name=_raw.capitalize())
+                    _owner_name = _raw.capitalize()
+
+            if not _owner_name:
+                # Имя ещё не получено — спрашиваем
+                _message_mode = "ONBOARDING"
+                _next_question = "owner_name"
+                _onboarding_phase = "owner"
+
+    # ── ONBOARDING override — только если нет симптома и профиль не заполнен
+    if _next_question != "owner_name" and _message_mode != "REGISTRATION_PROMPT":
+        _onboarding = get_onboarding_status(pet_id=message.pet_id)
+        _onboarding_phase = _onboarding.get("phase")
+        if not _onboarding["complete"] and _message_mode != "CLINICAL":
+            _message_mode = "ONBOARDING"
+            _next_question = _onboarding["next_question"]
 
     # ── CLARIFICATION CHECK ──────────────────────────────────────────
     # Проверяем нужен ли уточняющий вопрос перед генерацией ответа
@@ -1624,43 +1659,192 @@ def create_chat_message(message: ChatMessage):
     }
 
     # Извлекаем ответ пользователя для онбординга
-    if _message_mode == "ONBOARDING" and _next_question:
+    if _message_mode == "ONBOARDING" and _next_question and _next_question != "owner_name":
         _msg_lower = message.message.lower().strip()
         _profile_update = {}
 
-        if _next_question == "species":
-            if any(w in _msg_lower for w in ["кошк", "кот", "кис"]):
-                _profile_update["species"] = "cat"
-            elif any(w in _msg_lower for w in ["собак", "пёс", "пес", "щенок"]):
-                _profile_update["species"] = "dog"
+        # Детектор "не знаю" / пропуска — пропускаем поле
+        _skip_keywords = [
+            "не знаю", "незнаю", "не помню", "пропустить", "пропусти",
+            "потом", "позже", "не уверен", "не уверена", "пропуск", "skip",
+            "не хочу", "нет",
+        ]
+        _user_wants_skip = any(kw in _msg_lower for kw in _skip_keywords)
 
-        elif _next_question == "gender":
-            if any(w in _msg_lower for w in ["мальчик", "самец", "кот ", "пёс", "он"]):
-                _profile_update["gender"] = "male"
-            elif any(w in _msg_lower for w in ["девочк", "самка", "кошка", "она"]):
-                _profile_update["gender"] = "female"
+        # Полный порядок полей для fallback навигации
+        _full_field_order = [
+            "species", "name", "gender", "neutered", "age",
+            "photo", "breed", "color", "features", "chip_id", "stamp_id",
+        ]
 
-        elif _next_question == "neutered":
-            if any(w in _msg_lower for w in ["да", "кастрир", "стерил"]):
-                _profile_update["neutered"] = True
-            elif any(w in _msg_lower for w in ["нет", "не кастр", "не стерил"]):
-                _profile_update["neutered"] = False
+        if _user_wants_skip:
+            _skip_marker = {f"{_next_question}_skipped": True}
+            update_pet_profile(pet_id=message.pet_id, fields=_skip_marker)
+            _onboarding_recheck = get_onboarding_status(pet_id=message.pet_id)
+            if _onboarding_recheck.get("next_question") == _next_question:
+                # Последний resort: двигаемся по порядку
+                _current_idx = _full_field_order.index(_next_question) if _next_question in _full_field_order else -1
+                if _current_idx >= 0 and _current_idx < len(_full_field_order) - 1:
+                    _next_question = _full_field_order[_current_idx + 1]
+                else:
+                    _next_question = None
+            else:
+                _next_question = _onboarding_recheck.get("next_question")
+                _onboarding_phase = _onboarding_recheck.get("phase")
+        else:
+            # ── Парсинг текущего вопроса ──
+            if _next_question == "name":
+                import re as _re
+                _raw_name = message.message.strip()
 
-        elif _next_question == "age":
-            import re as _re
-            _year_match = _re.search(r"(\d{4})", _msg_lower)
-            _age_match = _re.search(r"(\d+)\s*(лет|год|года)", _msg_lower)
-            if _year_match:
-                _profile_update["birth_date"] = f"{_year_match.group(1)}-01-01"
-            elif _age_match:
-                _profile_update["age_years"] = int(_age_match.group(1))
+                _stop_words = [
+                    "его зовут", "её зовут", "кличка", "имя", "зовут",
+                    "мой", "моя", "наш", "наша", "питомец", "кот", "кошка",
+                    "собака", "пёс", "пес", "щенок",
+                ]
+                _cleaned_name = _raw_name.lower()
+                for sw in _stop_words:
+                    _cleaned_name = _cleaned_name.replace(sw, "").strip()
 
-        elif _next_question == "name":
-            if len(_msg_lower) > 0 and len(_msg_lower) < 50:
-                _profile_update["name"] = message.message.strip()
+                _name_match = _re.search(r"([А-ЯЁA-Z][а-яёa-z]{1,20})", _raw_name)
+                if _name_match:
+                    _candidate = _name_match.group(1)
+                    _bad_starts = ["Мой", "Моя", "Наш", "Наша", "Его", "Её", "Это"]
+                    if _candidate not in _bad_starts:
+                        _profile_update["name"] = _candidate
+                    else:
+                        _all_caps = _re.findall(r"([А-ЯЁA-Z][а-яёa-z]{1,20})", _raw_name)
+                        _filtered = [w for w in _all_caps if w not in _bad_starts]
+                        if _filtered:
+                            _profile_update["name"] = _filtered[0]
 
-        if _profile_update:
-            update_pet_profile(pet_id=message.pet_id, fields=_profile_update)
+                if not _profile_update.get("name") and _cleaned_name:
+                    _first_word = _cleaned_name.split()[0] if _cleaned_name.split() else ""
+                    if 2 <= len(_first_word) <= 20 and _first_word.isalpha():
+                        _profile_update["name"] = _first_word.capitalize()
+
+                if not _profile_update.get("name"):
+                    _words = _raw_name.strip().split()
+                    if len(_words) == 1 and 2 <= len(_words[0]) <= 20:
+                        _profile_update["name"] = _words[0].capitalize()
+
+            elif _next_question == "species":
+                if any(w in _msg_lower for w in ["кошк", "кот", "кис", "кошеч"]):
+                    _profile_update["species"] = "cat"
+                elif any(w in _msg_lower for w in ["собак", "пёс", "пес", "щенок", "щен"]):
+                    _profile_update["species"] = "dog"
+
+            elif _next_question == "gender":
+                if any(w in _msg_lower for w in ["мальчик", "самец", "кот ", "пёс ", "он ", "м"]):
+                    _profile_update["gender"] = "male"
+                elif any(w in _msg_lower for w in ["девочк", "самка", "кошка ", "она ", "ж"]):
+                    _profile_update["gender"] = "female"
+
+            elif _next_question == "neutered":
+                if any(w in _msg_lower for w in ["да", "кастрир", "стерил"]):
+                    _profile_update["neutered"] = True
+                elif any(w in _msg_lower for w in ["нет", "не кастр", "не стерил", "не "]):
+                    _profile_update["neutered"] = False
+
+            elif _next_question == "age":
+                import re as _re
+                _year_match = _re.search(r"(\d{4})", _msg_lower)
+                _age_match = _re.search(r"(\d+)\s*(лет|год|года|мес)", _msg_lower)
+                _num_only = _re.search(r"^(\d+)$", _msg_lower)
+                if _year_match:
+                    _profile_update["birth_date"] = f"{_year_match.group(1)}-01-01"
+                elif _age_match:
+                    _profile_update["age_years"] = int(_age_match.group(1))
+                elif _num_only:
+                    _profile_update["age_years"] = int(_num_only.group(1))
+
+            elif _next_question == "photo":
+                if hasattr(message, 'image_url') and message.image_url:
+                    _profile_update["photo_url"] = message.image_url
+                else:
+                    _skip_words_photo = ["пропустить", "пропусти", "потом", "позже", "нет", "skip", "не хочу"]
+                    if any(w in _msg_lower for w in _skip_words_photo):
+                        update_pet_profile(pet_id=message.pet_id, fields={"photo_skipped": True})
+
+            elif _next_question == "breed":
+                _raw_breed = message.message.strip()
+                _unknown_breed = ["не знаю", "незнаю", "не уверен", "смешанная", "дворняга",
+                                  "дворняжка", "беспородный", "беспородная", "метис"]
+                if any(w in _msg_lower for w in _unknown_breed):
+                    _profile_update["breed"] = "unknown"
+                elif len(_raw_breed) >= 2:
+                    _profile_update["breed"] = _raw_breed.capitalize()
+
+            elif _next_question == "color":
+                _raw_color = message.message.strip()
+                if len(_raw_color) >= 2:
+                    _profile_update["color"] = _raw_color.lower()
+
+            elif _next_question == "features":
+                _raw_features = message.message.strip()
+                _no_features = ["нет", "нету", "никаких", "обычный", "обычная", "не знаю"]
+                if any(w in _msg_lower for w in _no_features):
+                    _profile_update["features"] = "none"
+                elif len(_raw_features) >= 2:
+                    _profile_update["features"] = _raw_features
+
+            elif _next_question == "chip_id":
+                import re as _re
+                _chip_match = _re.search(r'\b(\d{9,15})\b', message.message)
+                _no_chip = ["нет", "нету", "не чипирован", "без чипа", "не знаю"]
+                if _chip_match:
+                    _profile_update["chip_id"] = _chip_match.group(1)
+                elif any(w in _msg_lower for w in _no_chip):
+                    _profile_update["chip_id"] = "none"
+
+            elif _next_question == "stamp_id":
+                import re as _re
+                _stamp_match = _re.search(r'\b([A-Za-z\u0410-\u042F\u0401\u0430-\u044F\u0451]{0,3}\d{3,8})\b', message.message)
+                _no_stamp = ["нет", "нету", "без клейма", "не знаю"]
+                if _stamp_match:
+                    _profile_update["stamp_id"] = _stamp_match.group(1).upper()
+                elif any(w in _msg_lower for w in _no_stamp):
+                    _profile_update["stamp_id"] = "none"
+
+            # ── Бонус: извлечь доп. поля из того же сообщения при вводе имени ──
+            if _next_question == "name" and _profile_update.get("name"):
+                if any(w in _msg_lower for w in ["кошк", "кот", "кис"]):
+                    _profile_update["species"] = "cat"
+                elif any(w in _msg_lower for w in ["собак", "пёс", "пес", "щенок"]):
+                    _profile_update["species"] = "dog"
+                import re as _re
+                _age_bonus = _re.search(r"(\d+)\s*(лет|год|года)", _msg_lower)
+                if _age_bonus:
+                    _profile_update["age_years"] = int(_age_bonus.group(1))
+                if any(w in _msg_lower for w in ["мальчик", "самец", "кастрир"]):
+                    _profile_update["gender"] = "male"
+                elif any(w in _msg_lower for w in ["девочк", "самка", "стерил"]):
+                    _profile_update["gender"] = "female"
+                if "кастрир" in _msg_lower:
+                    _profile_update["neutered"] = True
+                    _profile_update["gender"] = "male"
+                elif "стерил" in _msg_lower:
+                    _profile_update["neutered"] = True
+                    _profile_update["gender"] = "female"
+
+            # ── Сохранение ──
+            if _profile_update:
+                update_pet_profile(pet_id=message.pet_id, fields=_profile_update)
+
+            # ── AI-реакция на имя (микро-шаг) ──
+            if _next_question == "name" and _profile_update.get("name"):
+                _next_question = "name_reaction"
+            else:
+                # Перепроверяем статус после сохранения
+                _onboarding_recheck = get_onboarding_status(pet_id=message.pet_id)
+                _onboarding_phase = _onboarding_recheck.get("phase")
+                if not _onboarding_recheck["complete"]:
+                    _next_question = _onboarding_recheck["next_question"]
+                else:
+                    _next_question = None
+                    _message_mode = "ONBOARDING_COMPLETE"
+                    # Запланировать предложение регистрации на следующее сообщение
+                    update_user_flags(user_id=message.user_id, flags={"show_registration_prompt": True})
 
     ai_response = generate_ai_response(
         pet_profile=pet_profile,
@@ -1676,6 +1860,7 @@ def create_chat_message(message: ChatMessage):
         llm_contract=llm_contract,
         message_mode=_message_mode,
         client_time=message.client_time,
+        owner_name=_owner_name,
     )
 
     # Hard guard: ACTION / ACTION_HOME_PROTOCOL must not contain questions
@@ -1764,6 +1949,10 @@ def create_chat_message(message: ChatMessage):
         "escalation_message": escalation_message,
         "followup_instructions": followup_instructions,
         "linked_date": _linked_date,
+        "response_type": _message_mode,
+        "onboarding_phase": _onboarding_phase,
+        "onboarding_field": _next_question,
+        "owner_name": _owner_name,
     }
 
     # --- FINAL ESCALATION MONOTONIC LOCK ---

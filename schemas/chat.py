@@ -9,6 +9,7 @@ class ChatMessage(BaseModel):
     message: str = Field(..., max_length=5000)
     anonymous_id: Optional[str] = None
     client_time: Optional[str] = None
+    image_url: Optional[str] = None
 
     @field_validator("pet_id")
     @classmethod
