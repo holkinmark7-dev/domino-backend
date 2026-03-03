@@ -47,7 +47,7 @@ def _build_actions_block(clinical_decision: dict) -> str:
         )
 
 
-def generate_ai_response(pet_profile: dict, recent_events: list, user_message: str, urgency_score: int = 0, risk_level: str = None, memory_context: str = "No prior medical history.", clinical_decision=None, dialogue_mode: str = "normal", previous_assistant_text: str = None, strict_override: str = None, llm_contract: dict = None, message_mode: str = "CLINICAL", client_time: str = None, owner_name: str = None):
+def generate_ai_response(pet_profile: dict, recent_events: list, user_message: str, urgency_score: int = 0, risk_level: str = None, memory_context: str = "No prior medical history.", clinical_decision=None, dialogue_mode: str = "normal", previous_assistant_text: str = None, strict_override: str = None, llm_contract: dict = None, message_mode: str = "CLINICAL", client_time: str = None, owner_name: str = None, chat_history: list = None):
     """
     Генерация AI-ответа с учётом профиля, истории и уровня срочности
     """
@@ -336,6 +336,74 @@ STRICT RULES:
         )
         user_prompt = f"Сообщение пользователя: {user_message}"
 
+    elif message_mode == "ONBOARDING_OBSERVER":
+        # AI-наблюдатель: пользователь задал вопрос во время онбординга
+        # AI видит ВСЮ историю чата, отвечает на вопрос, возвращает к шагу
+
+        _pet_name_obs = (pet_profile.get("name") or "питомец") if pet_profile else "питомец"
+        _pet_species_obs = (pet_profile.get("species") or "").lower() if pet_profile else ""
+        _owner_obs = owner_name or ""
+
+        # Текущий шаг онбординга для возврата
+        _current_step_label = ""
+        if strict_override:
+            _step_labels = {
+                "species": "спросить кошка или собака",
+                "name": "спросить кличку питомца",
+                "gender": "спросить пол питомца",
+                "neutered": "спросить про кастрацию/стерилизацию",
+                "age_choice": "спросить возраст",
+                "age_date": "попросить дату рождения",
+                "age_approx": "спросить примерный возраст",
+                "breed": "спросить породу",
+                "color": "спросить окрас",
+                "features": "спросить про особые приметы",
+                "photo": "предложить загрузить фото",
+                "chip_id_ask": "спросить про микрочип",
+                "stamp_id_ask": "спросить про клеймо",
+            }
+            _current_step_label = _step_labels.get(strict_override, "продолжить заполнение профиля")
+
+        # Собираем историю чата в строку
+        _history_block = ""
+        if chat_history:
+            _lines = []
+            for msg in chat_history[-20:]:
+                _role = msg.get("role", "user")
+                _text = msg.get("message", "")[:200]
+                if _role == "user":
+                    _lines.append(f"Пользователь: {_text}")
+                elif _role == "ai":
+                    _lines.append(f"Dominik: {_text}")
+            _history_block = "\n".join(_lines)
+
+        system_block = (
+            f"Ты — Dominik, тёплый и заботливый помощник для владельцев питомцев.\n"
+            f"Сейчас идёт заполнение профиля питомца. Пользователь задал вопрос не по теме онбординга.\n"
+            f"\n"
+            f"Питомец: {_pet_name_obs}"
+            + (f", {_pet_species_obs}" if _pet_species_obs else "")
+            + "\n"
+            + (f"Владелец: {_owner_obs}\n" if _owner_obs else "")
+            + f"\n"
+            f"СТРОГИЕ ПРАВИЛА:\n"
+            f"1. Ответь на вопрос пользователя коротко и по делу (2-3 предложения максимум).\n"
+            f"2. После ответа мягко верни к онбординг-вопросу. НЕ задавай сам этот вопрос — просто скажи что-то вроде 'А давай продолжим?' или 'Вернёмся к профилю?'.\n"
+            f"3. Если вопрос медицинский и срочный — ответь серьёзно, забудь про онбординг.\n"
+            f"4. Тон: тёплый, живой, на ты. Короткие фразы.\n"
+            f"5. Отвечай только на русском языке.\n"
+            f"6. Никогда не начинай с 'Я понимаю' или 'Конечно'.\n"
+            f"7. НЕ здоровайся. НЕ представляйся. Вы уже общаетесь.\n"
+            f"8. Максимум 3-4 предложения.\n"
+            f"\n"
+            f"Текущий шаг онбординга (куда вернуть): {_current_step_label}\n"
+        )
+
+        if _history_block:
+            user_prompt = f"История разговора:\n{_history_block}\n\nНовое сообщение пользователя: {user_message}"
+        else:
+            user_prompt = f"Сообщение пользователя: {user_message}"
+
     elif message_mode == "ONBOARDING":
         # Детерминированные вопросы — LLM НЕ МОЖЕТ менять суть
 
@@ -400,7 +468,6 @@ STRICT RULES:
                 f"Ты — Dominik, тёплый помощник для владельцев питомцев.\n"
                 f"Сейчас ты заполняешь профиль питомца через диалог.\n"
                 f"Текущее время пользователя: {client_time or 'неизвестно'}.\n"
-                f"Учитывай время суток: 6-12 'Доброе утро', 12-18 'Добрый день', 18-23 'Добрый вечер'.\n"
                 f"\n"
                 f"СТРОГИЕ ПРАВИЛА:\n"
                 f"1. Задай РОВНО ОДИН вопрос — тот что указан ниже. Никаких других вопросов.\n"

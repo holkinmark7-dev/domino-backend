@@ -27,6 +27,11 @@ from routers.services.risk_engine import calculate_risk_score, ESCALATION_ORDER
 from routers.services.episode_manager import process_event, update_episode_escalation
 from routers.services.recurrence import check_recurrence
 from routers.services.episode_phase import compute_episode_phase
+from routers.services.onboarding import (
+    get_onboarding_message,
+    validate_onboarding_input,
+    is_off_topic,
+)
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import json
@@ -219,6 +224,27 @@ def _classify_message_mode(structured_data: dict, message_text: str) -> str:
     return "CASUAL"
 
 
+def _field_to_step(field: str, pet_profile: dict) -> str:
+    """
+    Map field from get_onboarding_status() to onboarding.py step.
+    For fields with branching, returns the first step of the branch.
+    """
+    _map = {
+        "species": "species",
+        "name": "name",
+        "gender": "gender",
+        "neutered": "neutered",
+        "age": "age_choice",
+        "photo": "photo",
+        "breed": "breed",
+        "color": "color",
+        "features": "features",
+        "chip_id": "chip_id_ask",
+        "stamp_id": "stamp_id_ask",
+    }
+    return _map.get(field, field)
+
+
 @router.post("/chat")
 def create_chat_message(message: ChatMessage):
 
@@ -307,7 +333,17 @@ def create_chat_message(message: ChatMessage):
             if _already_asked:
                 # Пробуем распознать имя из текущего сообщения
                 _raw = message.message.strip()
-                if len(_raw) >= 2 and len(_raw) <= 40 and _raw.replace(" ", "").replace("-", "").isalpha():
+                _name_blacklist = [
+                    "привет", "здравствуйте", "здравствуй", "добрый", "доброе",
+                    "добрый день", "добрый вечер", "доброе утро", "хай", "hello",
+                    "hi", "здрасте", "хеллоу", "ку", "йо", "даров", "дратути",
+                ]
+                if (
+                    len(_raw) >= 2
+                    and len(_raw) <= 40
+                    and _raw.replace(" ", "").replace("-", "").isalpha()
+                    and _raw.lower() not in _name_blacklist
+                ):
                     save_owner_name(user_id=message.user_id, name=_raw.capitalize())
                     _owner_name = _raw.capitalize()
 
@@ -317,13 +353,41 @@ def create_chat_message(message: ChatMessage):
                 _next_question = "owner_name"
                 _onboarding_phase = "owner"
 
+    # Early pet_profile fetch for onboarding step detection
+    pet_profile = get_pet_profile(pet_id=message.pet_id)
+
     # ── ONBOARDING override — только если нет симптома и профиль не заполнен
+    _onboarding_step = None  # Текущий шаг из onboarding.py
+    _auto_follow = None  # Для name_reaction → gender автосообщение
+    _quick_replies = []
+    _input_type = "text"
+    _is_off_topic = False
+
     if _next_question != "owner_name" and _message_mode != "REGISTRATION_PROMPT":
+        # Проверяем сохранённый под-шаг (для ветвлений: age_date, chip_id_input, итд)
+        _saved_step = pet_profile.get("onboarding_step") if pet_profile else None
+
         _onboarding = get_onboarding_status(pet_id=message.pet_id)
         _onboarding_phase = _onboarding.get("phase")
+
         if not _onboarding["complete"] and _message_mode != "CLINICAL":
             _message_mode = "ONBOARDING"
             _next_question = _onboarding["next_question"]
+
+            # Определяем текущий шаг: сохранённый под-шаг или маппинг из поля
+            if _saved_step:
+                _onboarding_step = _saved_step
+            else:
+                # Между required и optional — показать optional_gate
+                if _onboarding_phase == "optional" and _next_question in ["photo", "breed", "color", "features", "chip_id", "stamp_id"]:
+                    # Определяем программно: если saved_step на optional шаге → gate пройден
+                    _gate_passed = _saved_step in ["breed", "color", "features", "photo", "chip_id_ask", "chip_id_input", "stamp_id_ask", "stamp_id_input"]
+                    if not _gate_passed:
+                        _onboarding_step = "optional_gate"
+                    else:
+                        _onboarding_step = _field_to_step(_next_question, pet_profile or {})
+                else:
+                    _onboarding_step = _field_to_step(_next_question, pet_profile or {})
 
     # ── CLARIFICATION CHECK ──────────────────────────────────────────
     # Проверяем нужен ли уточняющий вопрос перед генерацией ответа
@@ -1658,210 +1722,182 @@ def create_chat_message(message: ChatMessage):
         ),
     }
 
-    # Извлекаем ответ пользователя для онбординга
-    if _message_mode == "ONBOARDING" and _next_question and _next_question != "owner_name":
-        _msg_lower = message.message.lower().strip()
-        _profile_update = {}
+    # ── Обработка ответа онбординга (детерминированный движок) ──
+    _validation = None
+    if _message_mode == "ONBOARDING" and _onboarding_step and _onboarding_step != "owner_name":
 
-        # Детектор "не знаю" / пропуска — пропускаем поле
-        _skip_keywords = [
-            "не знаю", "незнаю", "не помню", "пропустить", "пропусти",
-            "потом", "позже", "не уверен", "не уверена", "пропуск", "skip",
-            "не хочу", "нет",
-        ]
-        _user_wants_skip = any(kw in _msg_lower for kw in _skip_keywords)
+        # Проверяем off-topic
+        _is_off_topic = is_off_topic(_onboarding_step, message.message)
 
-        # Полный порядок полей для fallback навигации
-        _full_field_order = [
-            "species", "name", "gender", "neutered", "age",
-            "photo", "breed", "color", "features", "chip_id", "stamp_id",
-        ]
+        _chat_history = []
+        if _is_off_topic:
+            try:
+                _hist_result = (
+                    supabase.table("chat")
+                    .select("role, message")
+                    .eq("pet_id", message.pet_id)
+                    .order("created_at", desc=True)
+                    .limit(20)
+                    .execute()
+                )
+                if _hist_result.data:
+                    _chat_history = list(reversed(_hist_result.data))
+            except Exception as _hist_err:
+                print(f"[chat_history] {_hist_err}")
 
-        if _user_wants_skip:
-            _skip_marker = {f"{_next_question}_skipped": True}
-            update_pet_profile(pet_id=message.pet_id, fields=_skip_marker)
-            _onboarding_recheck = get_onboarding_status(pet_id=message.pet_id)
-            if _onboarding_recheck.get("next_question") == _next_question:
-                # Последний resort: двигаемся по порядку
-                _current_idx = _full_field_order.index(_next_question) if _next_question in _full_field_order else -1
-                if _current_idx >= 0 and _current_idx < len(_full_field_order) - 1:
-                    _next_question = _full_field_order[_current_idx + 1]
-                else:
-                    _next_question = None
-            else:
-                _next_question = _onboarding_recheck.get("next_question")
-                _onboarding_phase = _onboarding_recheck.get("phase")
-        else:
-            # ── Парсинг текущего вопроса ──
-            if _next_question == "name":
-                import re as _re
-                _raw_name = message.message.strip()
+        if not _is_off_topic:
+            # Валидируем ответ пользователя
+            _validation = validate_onboarding_input(
+                step=_onboarding_step,
+                user_message=message.message,
+                pet_profile=pet_profile or {}
+            )
 
-                _stop_words = [
-                    "его зовут", "её зовут", "кличка", "имя", "зовут",
-                    "мой", "моя", "наш", "наша", "питомец", "кот", "кошка",
-                    "собака", "пёс", "пес", "щенок",
-                ]
-                _cleaned_name = _raw_name.lower()
-                for sw in _stop_words:
-                    _cleaned_name = _cleaned_name.replace(sw, "").strip()
+            if _validation["valid"]:
+                # Сохраняем распарсенные поля
+                if _validation.get("field_updates"):
+                    update_pet_profile(pet_id=message.pet_id, fields=_validation["field_updates"])
+                    # Обновляем локальный профиль
+                    pet_profile = get_pet_profile(pet_id=message.pet_id)
 
-                _name_match = _re.search(r"([А-ЯЁA-Z][а-яёa-z]{1,20})", _raw_name)
-                if _name_match:
-                    _candidate = _name_match.group(1)
-                    _bad_starts = ["Мой", "Моя", "Наш", "Наша", "Его", "Её", "Это"]
-                    if _candidate not in _bad_starts:
-                        _profile_update["name"] = _candidate
-                    else:
-                        _all_caps = _re.findall(r"([А-ЯЁA-Z][а-яёa-z]{1,20})", _raw_name)
-                        _filtered = [w for w in _all_caps if w not in _bad_starts]
-                        if _filtered:
-                            _profile_update["name"] = _filtered[0]
+                # optional_gate: запоминаем что прошли
+                _next_step = _validation.get("next_step")
+                if _onboarding_step == "optional_gate" and _next_step and _next_step != "complete":
+                    update_pet_profile(pet_id=message.pet_id, fields={"optional_gate_passed": True})
 
-                if not _profile_update.get("name") and _cleaned_name:
-                    _first_word = _cleaned_name.split()[0] if _cleaned_name.split() else ""
-                    if 2 <= len(_first_word) <= 20 and _first_word.isalpha():
-                        _profile_update["name"] = _first_word.capitalize()
-
-                if not _profile_update.get("name"):
-                    _words = _raw_name.strip().split()
-                    if len(_words) == 1 and 2 <= len(_words[0]) <= 20:
-                        _profile_update["name"] = _words[0].capitalize()
-
-            elif _next_question == "species":
-                if any(w in _msg_lower for w in ["кошк", "кот", "кис", "кошеч"]):
-                    _profile_update["species"] = "cat"
-                elif any(w in _msg_lower for w in ["собак", "пёс", "пес", "щенок", "щен"]):
-                    _profile_update["species"] = "dog"
-
-            elif _next_question == "gender":
-                if any(w in _msg_lower for w in ["мальчик", "самец", "кот ", "пёс ", "он ", "м"]):
-                    _profile_update["gender"] = "male"
-                elif any(w in _msg_lower for w in ["девочк", "самка", "кошка ", "она ", "ж"]):
-                    _profile_update["gender"] = "female"
-
-            elif _next_question == "neutered":
-                if any(w in _msg_lower for w in ["да", "кастрир", "стерил"]):
-                    _profile_update["neutered"] = True
-                elif any(w in _msg_lower for w in ["нет", "не кастр", "не стерил", "не "]):
-                    _profile_update["neutered"] = False
-
-            elif _next_question == "age":
-                import re as _re
-                _year_match = _re.search(r"(\d{4})", _msg_lower)
-                _age_match = _re.search(r"(\d+)\s*(лет|год|года|мес)", _msg_lower)
-                _num_only = _re.search(r"^(\d+)$", _msg_lower)
-                if _year_match:
-                    _profile_update["birth_date"] = f"{_year_match.group(1)}-01-01"
-                elif _age_match:
-                    _profile_update["age_years"] = int(_age_match.group(1))
-                elif _num_only:
-                    _profile_update["age_years"] = int(_num_only.group(1))
-
-            elif _next_question == "photo":
-                if hasattr(message, 'image_url') and message.image_url:
-                    _profile_update["photo_url"] = message.image_url
-                else:
-                    _skip_words_photo = ["пропустить", "пропусти", "потом", "позже", "нет", "skip", "не хочу"]
-                    if any(w in _msg_lower for w in _skip_words_photo):
-                        update_pet_profile(pet_id=message.pet_id, fields={"photo_skipped": True})
-
-            elif _next_question == "breed":
-                _raw_breed = message.message.strip()
-                _unknown_breed = ["не знаю", "незнаю", "не уверен", "смешанная", "дворняга",
-                                  "дворняжка", "беспородный", "беспородная", "метис"]
-                if any(w in _msg_lower for w in _unknown_breed):
-                    _profile_update["breed"] = "unknown"
-                elif len(_raw_breed) >= 2:
-                    _profile_update["breed"] = _raw_breed.capitalize()
-
-            elif _next_question == "color":
-                _raw_color = message.message.strip()
-                if len(_raw_color) >= 2:
-                    _profile_update["color"] = _raw_color.lower()
-
-            elif _next_question == "features":
-                _raw_features = message.message.strip()
-                _no_features = ["нет", "нету", "никаких", "обычный", "обычная", "не знаю"]
-                if any(w in _msg_lower for w in _no_features):
-                    _profile_update["features"] = "none"
-                elif len(_raw_features) >= 2:
-                    _profile_update["features"] = _raw_features
-
-            elif _next_question == "chip_id":
-                import re as _re
-                _chip_match = _re.search(r'\b(\d{9,15})\b', message.message)
-                _no_chip = ["нет", "нету", "не чипирован", "без чипа", "не знаю"]
-                if _chip_match:
-                    _profile_update["chip_id"] = _chip_match.group(1)
-                elif any(w in _msg_lower for w in _no_chip):
-                    _profile_update["chip_id"] = "none"
-
-            elif _next_question == "stamp_id":
-                import re as _re
-                _stamp_match = _re.search(r'\b([A-Za-z\u0410-\u042F\u0401\u0430-\u044F\u0451]{0,3}\d{3,8})\b', message.message)
-                _no_stamp = ["нет", "нету", "без клейма", "не знаю"]
-                if _stamp_match:
-                    _profile_update["stamp_id"] = _stamp_match.group(1).upper()
-                elif any(w in _msg_lower for w in _no_stamp):
-                    _profile_update["stamp_id"] = "none"
-
-            # ── Бонус: извлечь доп. поля из того же сообщения при вводе имени ──
-            if _next_question == "name" and _profile_update.get("name"):
-                if any(w in _msg_lower for w in ["кошк", "кот", "кис"]):
-                    _profile_update["species"] = "cat"
-                elif any(w in _msg_lower for w in ["собак", "пёс", "пес", "щенок"]):
-                    _profile_update["species"] = "dog"
-                import re as _re
-                _age_bonus = _re.search(r"(\d+)\s*(лет|год|года)", _msg_lower)
-                if _age_bonus:
-                    _profile_update["age_years"] = int(_age_bonus.group(1))
-                if any(w in _msg_lower for w in ["мальчик", "самец", "кастрир"]):
-                    _profile_update["gender"] = "male"
-                elif any(w in _msg_lower for w in ["девочк", "самка", "стерил"]):
-                    _profile_update["gender"] = "female"
-                if "кастрир" in _msg_lower:
-                    _profile_update["neutered"] = True
-                    _profile_update["gender"] = "male"
-                elif "стерил" in _msg_lower:
-                    _profile_update["neutered"] = True
-                    _profile_update["gender"] = "female"
-
-            # ── Сохранение ──
-            if _profile_update:
-                update_pet_profile(pet_id=message.pet_id, fields=_profile_update)
-
-            # ── AI-реакция на имя (микро-шаг) ──
-            if _next_question == "name" and _profile_update.get("name"):
-                _next_question = "name_reaction"
-            else:
-                # Перепроверяем статус после сохранения
-                _onboarding_recheck = get_onboarding_status(pet_id=message.pet_id)
-                _onboarding_phase = _onboarding_recheck.get("phase")
-                if not _onboarding_recheck["complete"]:
-                    _next_question = _onboarding_recheck["next_question"]
-                else:
-                    _next_question = None
+                if _next_step == "complete":
+                    # Онбординг завершён
                     _message_mode = "ONBOARDING_COMPLETE"
-                    # Запланировать предложение регистрации на следующее сообщение
+                    _onboarding_step = None
+                    _next_question = None
+                    # Очищаем onboarding_step в БД
+                    update_pet_profile(pet_id=message.pet_id, fields={"onboarding_step": None})
                     update_user_flags(user_id=message.user_id, flags={"show_registration_prompt": True})
 
-    ai_response = generate_ai_response(
-        pet_profile=pet_profile,
-        recent_events=recent_events,
-        user_message=message.message,
-        urgency_score=urgency_score,
-        risk_level=risk_level,
-        memory_context=memory_context,
-        clinical_decision=decision,
-        dialogue_mode=dialogue_mode,
-        previous_assistant_text=_prev_summary,
-        strict_override=_next_question if _message_mode == "ONBOARDING" else _strict,
-        llm_contract=llm_contract,
-        message_mode=_message_mode,
-        client_time=message.client_time,
-        owner_name=_owner_name,
-    )
+                elif _next_step:
+                    # Явное ветвление (age_choice → age_date/age_approx, итд)
+                    _onboarding_step = _next_step
+                    # Сохраняем под-шаг в БД
+                    update_pet_profile(pet_id=message.pet_id, fields={"onboarding_step": _next_step})
+
+                elif _onboarding_step == "name":
+                    # После имени → name_reaction + auto_follow gender
+                    _onboarding_step = "name_reaction"
+                    # НЕ сохраняем name_reaction как шаг — он транзитный
+                    # Следующий реальный шаг — gender
+                    update_pet_profile(pet_id=message.pet_id, fields={"onboarding_step": "gender"})
+
+                else:
+                    # Стандартный переход: перепроверяем статус
+                    # Очищаем сохранённый под-шаг
+                    update_pet_profile(pet_id=message.pet_id, fields={"onboarding_step": None})
+                    _onboarding_recheck = get_onboarding_status(pet_id=message.pet_id)
+                    _onboarding_phase = _onboarding_recheck.get("phase")
+
+                    if _onboarding_recheck["complete"]:
+                        _message_mode = "ONBOARDING_COMPLETE"
+                        _onboarding_step = None
+                        _next_question = None
+                        update_user_flags(user_id=message.user_id, flags={"show_registration_prompt": True})
+                    else:
+                        _next_field = _onboarding_recheck["next_question"]
+                        # Проверяем optional_gate
+                        if _onboarding_recheck["phase"] == "optional":
+                            _saved_step_recheck = (pet_profile or {}).get("onboarding_step")
+                            _gate_passed_recheck = _saved_step_recheck in [
+                                "breed", "color", "features", "photo",
+                                "chip_id_ask", "chip_id_input", "stamp_id_ask", "stamp_id_input",
+                            ]
+                            if not _gate_passed_recheck and not (pet_profile or {}).get("optional_gate_passed"):
+                                _onboarding_step = "optional_gate"
+                            else:
+                                _onboarding_step = _field_to_step(_next_field, pet_profile or {})
+                        else:
+                            _onboarding_step = _field_to_step(_next_field, pet_profile or {})
+                        _next_question = _next_field
+
+            else:
+                # Невалидный ввод — остаёмся на том же шаге, показываем ошибку
+                # _onboarding_step не меняется
+                pass
+
+    print(f"[ONBOARDING DEBUG] mode={_message_mode} step={_onboarding_step if '_onboarding_step' in dir() else 'N/A'} next_q={_next_question} off_topic={_is_off_topic if '_is_off_topic' in dir() else 'N/A'} deterministic={_onboarding_deterministic if '_onboarding_deterministic' in dir() else 'N/A'}")
+
+    # ── Детерминированный ответ онбординга ──
+    _onboarding_deterministic = False
+
+    if _message_mode == "ONBOARDING" and _onboarding_step and _onboarding_step != "owner_name" and not _is_off_topic:
+        _onboarding_deterministic = True
+
+        # Проверяем: была ли ошибка валидации?
+        if _validation is not None and not _validation.get("valid", True):
+            # Ошибка — показываем error_message
+            ai_response = _validation.get("error_message", "Не совсем понял. Попробуй ещё раз.")
+            _ob_msg = get_onboarding_message(_onboarding_step, pet_profile or {})
+            _quick_replies = _ob_msg.get("quick_replies", [])
+            _input_type = _ob_msg.get("input_type", "text")
+
+        elif _message_mode == "ONBOARDING_COMPLETE":
+            # Завершение — пойдёт через LLM (ONBOARDING_COMPLETE mode)
+            _onboarding_deterministic = False
+
+        elif _onboarding_step == "name_reaction":
+            # name_reaction + auto_follow gender
+            _ob_reaction = get_onboarding_message("name_reaction", pet_profile or {})
+            ai_response = _ob_reaction["text"]
+            _quick_replies = []
+            _input_type = "none"
+
+            # auto_follow — gender вопрос через 1 сек
+            _ob_gender = get_onboarding_message("gender", pet_profile or {})
+            _auto_follow = {
+                "text": _ob_gender["text"],
+                "quick_replies": _ob_gender.get("quick_replies", []),
+                "input_type": _ob_gender.get("input_type", "buttons"),
+                "delay_ms": 1000,
+                "onboarding_field": "gender",
+            }
+
+        else:
+            # Стандартный шаг — детерминированная строка
+            _ob_msg = get_onboarding_message(_onboarding_step, pet_profile or {})
+            ai_response = _ob_msg["text"]
+            _quick_replies = _ob_msg.get("quick_replies", [])
+            _input_type = _ob_msg.get("input_type", "text")
+
+    # Off-topic во время онбординга → ONBOARDING_OBSERVER mode
+    _actual_message_mode = _message_mode
+    _actual_chat_history = None
+    _actual_strict = _next_question if _message_mode == "ONBOARDING" else _strict
+    if _is_off_topic and _message_mode == "ONBOARDING" and _onboarding_step:
+        _actual_message_mode = "ONBOARDING_OBSERVER"
+        _actual_chat_history = _chat_history if _chat_history else None
+        _actual_strict = _onboarding_step
+
+    if not _onboarding_deterministic:
+        ai_response = generate_ai_response(
+            pet_profile=pet_profile,
+            recent_events=recent_events,
+            user_message=message.message,
+            urgency_score=urgency_score,
+            risk_level=risk_level,
+            memory_context=memory_context,
+            clinical_decision=decision,
+            dialogue_mode=dialogue_mode,
+            previous_assistant_text=_prev_summary,
+            strict_override=_actual_strict,
+            llm_contract=llm_contract,
+            message_mode=_actual_message_mode,
+            client_time=message.client_time,
+            owner_name=_owner_name,
+            chat_history=_actual_chat_history,
+        )
+
+    # После off-topic: добавляем quick_replies текущего шага чтобы фронт показал кнопки
+    if _is_off_topic and _onboarding_step:
+        _ob_current = get_onboarding_message(_onboarding_step, pet_profile or {})
+        _quick_replies = _ob_current.get("quick_replies", [])
+        _input_type = _ob_current.get("input_type", "text")
 
     # Hard guard: ACTION / ACTION_HOME_PROTOCOL must not contain questions
     if (
@@ -1887,7 +1923,7 @@ def create_chat_message(message: ChatMessage):
 
     # --- MAX QUESTIONS ENFORCEMENT GUARD (DAY 1.2) ---
     question_guard_triggered = False
-    if llm_contract:
+    if llm_contract and not _onboarding_deterministic:
         max_q = llm_contract.get("max_questions", 0)
         if isinstance(max_q, int) and max_q >= 0:
             # максимум 2 попытки генерации
@@ -1934,6 +1970,18 @@ def create_chat_message(message: ChatMessage):
         print("[ai_persist ERROR]")
         traceback.print_exc()
 
+    # Сохраняем auto_follow как отдельное сообщение в чат
+    if _auto_follow:
+        try:
+            supabase.table("chat").insert({
+                "user_id": message.user_id,
+                "pet_id": message.pet_id,
+                "message": _auto_follow["text"],
+                "role": "ai",
+            }).execute()
+        except Exception as _af_err:
+            print(f"[auto_follow persist] {_af_err}")
+
     _linked_date = str(date.today()) if decision and structured_data.get("symptom") else None
 
     response_payload = {
@@ -1953,6 +2001,9 @@ def create_chat_message(message: ChatMessage):
         "onboarding_phase": _onboarding_phase,
         "onboarding_field": _next_question,
         "owner_name": _owner_name,
+        "quick_replies": _quick_replies,
+        "input_type": _input_type,
+        "auto_follow": _auto_follow,
     }
 
     # --- FINAL ESCALATION MONOTONIC LOCK ---
