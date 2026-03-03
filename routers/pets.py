@@ -23,3 +23,12 @@ def create_pet(pet: PetCreate):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/pets/{user_id}")
+def get_pets(user_id: str):
+    try:
+        response = supabase.table("pets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
+        return response.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
