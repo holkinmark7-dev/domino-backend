@@ -208,6 +208,15 @@ def _call_create(
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
+        patch("routers.chat.get_onboarding_status", return_value={
+            "complete": True,
+            "next_question": None,
+            "answered": ["species", "name", "gender", "neutered", "age"],
+        }),
+        patch("routers.chat.get_owner_name", return_value="Марк"),
+        patch("routers.chat.save_owner_name"),
+        patch("routers.chat.get_user_flags", return_value={}),
+        patch("routers.chat.update_user_flags"),
     ):
         result = chat_module.create_chat_message(msg)
 
@@ -227,9 +236,9 @@ class TestCasualMode(unittest.TestCase):
                          "T01: greeting should be classified as CASUAL")
 
     def test_t02_casual_system_no_medical_ai(self):
-        """T02: CASUAL system_block must NOT contain 'медицинский ИИ-ассистент'"""
+        """T02: CASUAL system_block must NOT contain 'медицинский AI-ассистент'"""
         system_block, _ = _capture_ai(message_mode="CASUAL")
-        self.assertNotIn("медицинский ИИ-ассистент", system_block,
+        self.assertNotIn("медицинский AI-ассистент", system_block,
                          "T02: CASUAL system_block must not contain medical AI text")
 
     def test_t03_casual_system_no_redundancy_guard(self):
@@ -282,11 +291,11 @@ class TestProfileMode(unittest.TestCase):
                          "T07: grooming question must be classified as PROFILE")
 
     def test_t08_profile_system_block(self):
-        """T08: PROFILE system_block contains 'помощник по уходу', NOT 'медицинский ИИ-ассистент'"""
+        """T08: PROFILE system_block contains 'заботливый помощник', NOT 'медицинский AI-ассистент'"""
         system_block, _ = _capture_ai(message_mode="PROFILE")
-        self.assertIn("помощник по уходу", system_block,
-                      "T08: PROFILE system_block must contain 'помощник по уходу'")
-        self.assertNotIn("медицинский ИИ-ассистент", system_block,
+        self.assertIn("заботливый помощник", system_block,
+                      "T08: PROFILE system_block must contain 'заботливый помощник'")
+        self.assertNotIn("медицинский AI-ассистент", system_block,
                          "T08: PROFILE system_block must NOT contain medical AI text")
 
     def test_t09_profile_user_prompt_has_pet_data(self):
@@ -326,10 +335,10 @@ class TestClinicalMode(unittest.TestCase):
                          "T11: symptom present must be classified as CLINICAL")
 
     def test_t12_clinical_system_block(self):
-        """T12: CLINICAL system_block contains 'медицинский ИИ-ассистент'"""
+        """T12: CLINICAL system_block contains 'медицинский AI-ассистент'"""
         system_block, _ = _capture_ai(message_mode="CLINICAL")
-        self.assertIn("медицинский ИИ-ассистент", system_block,
-                      "T12: CLINICAL system_block must contain 'медицинский ИИ-ассистент'")
+        self.assertIn("медицинский AI-ассистент", system_block,
+                      "T12: CLINICAL system_block must contain 'медицинский AI-ассистент'")
 
     def test_t13_clinical_pipeline_has_debug(self):
         """T13: CLINICAL message with symptom through pipeline → debug in result"""
