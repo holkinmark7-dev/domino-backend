@@ -1,8 +1,18 @@
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def ensure_user_exists(user_id: str):
+    supabase.table("users").upsert(
+        {"id": user_id},
+        on_conflict="id"
+    ).execute()
 
 
 def save_event(user_id: str, pet_id: str, event_type: str, content):
@@ -88,7 +98,8 @@ def get_pet_profile(pet_id: str):
         )
         if med_data.data:
             profile["medical"] = med_data.data
-    except Exception:
+    except Exception as e:
+        logger.error("[get_pet_profile] Failed to load medical profile for pet_id=%s: %s", pet_id, e)
         profile["medical"] = None
 
     return profile
@@ -117,7 +128,7 @@ def get_medical_events(pet_id: str, limit: int = 50):
         try:
             event["content"] = json.loads(event["content"])
         except (json.JSONDecodeError, ValueError) as e:
-            print(f"[parse error] Failed to parse medical event content: {e}")
+            logger.warning("[get_medical_events] Failed to parse event content for pet_id=%s: %s", pet_id, e)
             event["content"] = {"error": "invalid_json"}
 
     return events
@@ -130,14 +141,18 @@ def update_pet_profile(pet_id: str, fields: dict):
     """
     if not fields:
         return None
-    data = (
-        supabase
-        .table("pets")
-        .update(fields)
-        .eq("id", pet_id)
-        .execute()
-    )
-    return data.data
+    try:
+        data = (
+            supabase
+            .table("pets")
+            .update(fields)
+            .eq("id", pet_id)
+            .execute()
+        )
+        return data.data
+    except Exception as e:
+        logger.error("[update_pet_profile] pet_id=%s fields=%s error=%s", pet_id, fields, e)
+        return None
 
 
 def upsert_pet_medical_profile(pet_id: str, fields: dict):
@@ -183,7 +198,7 @@ def get_onboarding_status(pet_id: str, user_id: str = None) -> dict:
       species, name, gender, neutered, age — из таблицы pets
 
     Необязательные поля (можно пропустить):
-      photo, breed, color, features, chip_id, stamp_id
+      breed, color, features, chip_id, stamp_id
 
     Поле считается заполненным если:
       - значение не None, ИЛИ
@@ -194,7 +209,7 @@ def get_onboarding_status(pet_id: str, user_id: str = None) -> dict:
     REQUIRED_FIELDS = ["species", "name", "gender", "neutered", "age"]
 
     # Необязательные поля — предлагаются после обязательных
-    OPTIONAL_FIELDS = ["photo", "breed", "color", "features", "chip_id", "stamp_id"]
+    OPTIONAL_FIELDS = ["breed", "color", "features", "chip_id", "stamp_id"]
 
     profile = get_pet_profile(pet_id)
     if not profile:
@@ -218,7 +233,7 @@ def get_onboarding_status(pet_id: str, user_id: str = None) -> dict:
 
     # Все обязательные заполнены — проверяем необязательные
     for field in OPTIONAL_FIELDS:
-        val = profile.get(field) if field != "photo" else profile.get("photo_url")
+        val = profile.get(field)
         skipped = profile.get(f"{field}_skipped", False)
         if val is None and not skipped:
             return {

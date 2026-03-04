@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 import routers.services.ai as ai_module
+from routers.services.ai import AIResponseRequest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,13 +71,13 @@ def _capture(pet_profile=None, clinical_decision=None, urgency_score=0):
         return fake_response
 
     with patch.object(ai_module.client.chat.completions, "create", side_effect=_fake_create):
-        ai_module.generate_ai_response(
+        ai_module.generate_ai_response(AIResponseRequest(
             pet_profile=pet_profile or _DUMMY_PET,
             recent_events=[],
             user_message="тест",
             urgency_score=urgency_score,
             clinical_decision=clinical_decision,
-        )
+        ))
 
     system_block = captured["messages"][0]["content"]
     user_prompt = captured["messages"][1]["content"]

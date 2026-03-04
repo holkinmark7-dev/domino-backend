@@ -36,7 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import routers.chat as chat_module
 import routers.services.ai as ai_module
-from routers.chat import _classify_message_mode
+from routers.services.ai import AIResponseRequest
+from routers.services.chat_helpers import _classify_message_mode
 from schemas.chat import ChatMessage
 
 
@@ -96,7 +97,7 @@ def _capture_ai(
         return fake_response
 
     with patch.object(ai_module.client.chat.completions, "create", side_effect=_fake_create):
-        ai_module.generate_ai_response(
+        ai_module.generate_ai_response(AIResponseRequest(
             pet_profile=_DUMMY_PET,
             recent_events=[],
             user_message=user_message,
@@ -105,7 +106,7 @@ def _capture_ai(
             previous_assistant_text=previous_assistant_text,
             memory_context=memory_context,
             message_mode=message_mode,
-        )
+        ))
 
     system_block = captured["messages"][0]["content"]
     user_prompt  = captured["messages"][1]["content"]
@@ -179,8 +180,9 @@ def _call_create(
     stub_sb = _stub_supabase()
     captured_gen: dict = {}
 
-    def _fake_generate(**kwargs):
-        captured_gen.update(kwargs)
+    def _fake_generate(req):
+        from dataclasses import asdict
+        captured_gen.update(asdict(req))
         return "stub AI response"
 
     with (
@@ -193,28 +195,29 @@ def _call_create(
         patch("routers.chat.process_event", return_value={
             "episode_id": "ep-mode-1", "action": "updated",
         }),
-        patch("routers.chat.get_symptom_stats",
+        patch("routers.services.clinical_router.get_symptom_stats",
               side_effect=lambda *a, **kw: dict(_stats)),
         patch("routers.chat.get_recent_events", return_value=[]),
         patch("routers.chat.get_medical_events", return_value=[]),
-        patch("routers.chat.check_recurrence", return_value=False),
-        patch("routers.chat.apply_cross_symptom_override",
+        patch("routers.services.clinical_router.get_medical_events", return_value=[]),
+        patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+        patch("routers.services.decision_postprocess.apply_cross_symptom_override",
               side_effect=lambda **kw: kw["decision"]),
         patch("routers.chat.update_episode_escalation"),
         patch("routers.chat.generate_ai_response", side_effect=_fake_generate),
         patch("routers.chat.save_event"),
         patch("routers.chat.save_medical_event"),
-        patch("routers.chat.calculate_risk_score", return_value={
+        patch("routers.services.decision_postprocess.calculate_risk_score", return_value={
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
-        patch("routers.chat.get_onboarding_status", return_value={
+        patch("routers.services.onboarding_router.get_onboarding_status", return_value={
             "complete": True,
             "next_question": None,
             "answered": ["species", "name", "gender", "neutered", "age"],
         }),
-        patch("routers.chat.get_owner_name", return_value="Марк"),
-        patch("routers.chat.save_owner_name"),
+        patch("routers.services.onboarding_router.get_owner_name", return_value="Марк"),
+        patch("routers.services.onboarding_router.save_owner_name"),
         patch("routers.chat.get_user_flags", return_value={}),
         patch("routers.chat.update_user_flags"),
     ):

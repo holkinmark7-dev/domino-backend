@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from routers.services.response_templates import select_template
 import routers.services.ai as ai_module
-from routers.services.ai import generate_ai_response
+from routers.services.ai import generate_ai_response, AIResponseRequest
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ def _call_generate_and_capture(decision, llm_contract=None):
     mock_client.chat.completions.create.side_effect = fake_create
 
     with patch.object(ai_module, "client", mock_client):
-        result = generate_ai_response(
+        result = generate_ai_response(AIResponseRequest(
             pet_profile={"name": "Бони", "species": "dog", "breed": "beagle", "birth_date": "2020-01-01"},
             recent_events=[],
             user_message="У питомца рвота",
@@ -60,7 +60,7 @@ def _call_generate_and_capture(decision, llm_contract=None):
             previous_assistant_text=None,
             strict_override=None,
             llm_contract=llm_contract,
-        )
+        ))
 
     user_prompt = captured["messages"][1]["content"] if len(captured.get("messages", [])) > 1 else ""
     return user_prompt, result
@@ -176,12 +176,12 @@ class TestDeterministicPromptInjection(unittest.TestCase):
         mock_client.chat.completions.create.side_effect = fake_create
 
         with patch.object(ai_module, "client", mock_client):
-            generate_ai_response(
+            generate_ai_response(AIResponseRequest(
                 pet_profile={"name": "X", "species": "dog", "breed": "lab", "birth_date": "2020-01-01"},
                 recent_events=[],
                 user_message="test",
                 clinical_decision=None,
-            )
+            ))
 
         user_prompt = captured["messages"][1]["content"]
         self.assertIn("Профиль", user_prompt)

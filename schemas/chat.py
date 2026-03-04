@@ -6,10 +6,17 @@ from uuid import UUID
 class ChatMessage(BaseModel):
     user_id: Optional[str] = None
     pet_id: str = Field(..., min_length=1)
-    message: str = Field(..., max_length=5000)
+    message: str = Field(..., min_length=1, max_length=5000)
     anonymous_id: Optional[str] = None
     client_time: Optional[str] = None
     image_url: Optional[str] = None
+
+    @field_validator("message")
+    @classmethod
+    def message_not_blank(cls, v):
+        if not v.strip():
+            raise ValueError("message cannot be blank")
+        return v
 
     @field_validator("pet_id")
     @classmethod

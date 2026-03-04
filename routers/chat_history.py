@@ -19,7 +19,9 @@ User messages are enriched with triage data from linked medical events.
 """
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
+from dependencies.auth import get_current_user, verify_pet_owner
+from dependencies.limiter import limiter
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_KEY
@@ -65,7 +67,8 @@ def _parse_medical_events(pet_id: str) -> dict:
 
 
 @router.get("/chat/history/{pet_id}")
-def get_chat_history(pet_id: str):
+@limiter.limit("30/minute")
+def get_chat_history(pet_id: str, request: Request = None, current_user: dict = Depends(get_current_user)):
     """
     Return chronological chat messages for the given pet.
 
@@ -77,6 +80,7 @@ def get_chat_history(pet_id: str):
       risk_level           – "normal" | "low" | "moderate" | "high"
       followup_instructions – guidance string if risk ≥ moderate, else null
     """
+    verify_pet_owner(pet_id, current_user, supabase)
     # ── 1. All messages (chronological, oldest first) ─────────────────────────
     chat_result = (
         supabase.table("chat")

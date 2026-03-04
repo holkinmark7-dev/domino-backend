@@ -19,7 +19,7 @@ REQUIRED_STEPS = [
     "age_choice", "age_date", "age_approx",
 ]
 OPTIONAL_STEPS = [
-    "breed", "color", "features", "photo",
+    "breed", "color", "features",
     "chip_id_ask", "chip_id_input", "stamp_id_ask", "stamp_id_input",
 ]
 
@@ -138,7 +138,7 @@ def get_onboarding_message(step: str, pet_profile: dict) -> dict:
 
     if step == "optional_gate":
         return {
-            "text": f"Профиль {_name} готов! Можем добавить подробности — порода, окрас, фото — или вернёмся к этому позже",
+            "text": f"Профиль {_name} готов! Можем добавить подробности — порода, окрас, приметы — или вернёмся к этому позже",
             "quick_replies": ["Заполним сейчас", "Позже"],
             "input_type": "buttons",
         }
@@ -162,13 +162,6 @@ def get_onboarding_message(step: str, pet_profile: dict) -> dict:
             "text": f"Есть ли у {_name} особые приметы — пятна, шрамы, необычный окрас?",
             "quick_replies": ["Нет", "Пропустить"],
             "input_type": "text",
-        }
-
-    if step == "photo":
-        return {
-            "text": f"Хочешь добавить фото {_name} для аватарки?",
-            "quick_replies": ["Загрузить фото", "Позже"],
-            "input_type": "buttons",
         }
 
     if step == "chip_id_ask":
@@ -364,14 +357,6 @@ def validate_onboarding_input(step: str, user_message: str, pet_profile: dict) -
         if any(k in _msg_lower for k in ("нет", "пропуст", "skip")):
             return {**ok, "parsed_value": None, "field_updates": {}}
         return {**ok, "parsed_value": _msg.strip(), "field_updates": {"features": _msg.strip()}}
-
-    # ── photo ─────────────────────────────────────────────────────────────
-    if step == "photo":
-        if any(k in _msg_lower for k in ("загруз", "фото", "да")):
-            return {**ok, "parsed_value": "upload", "next_step": "photo_upload"}
-        if any(k in _msg_lower for k in ("позже", "потом", "нет", "пропуст")):
-            return {**ok, "parsed_value": None, "next_step": "chip_id_ask"}
-        return {**fail, "error_message": "Выбери один из вариантов"}
 
     # ── chip_id_ask ───────────────────────────────────────────────────────
     if step == "chip_id_ask":

@@ -11,8 +11,10 @@ no additional DB queries.
 import io
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
+from dependencies.auth import get_current_user, verify_pet_owner
+from dependencies.limiter import limiter
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from supabase import create_client
@@ -27,7 +29,8 @@ _EPISODE_FIELDS = "id, normalized_key, escalation, status, started_at, resolved_
 
 
 @router.get("/vet-report/{pet_id}")
-def get_vet_report(pet_id: str):
+@limiter.limit("30/minute")
+def get_vet_report(pet_id: str, request: Request = None, current_user: dict = Depends(get_current_user)):
     """
     Return a structured clinical history report for a pet.
 
@@ -36,6 +39,7 @@ def get_vet_report(pet_id: str):
     - Escalation values passed through as-is — never recalculated.
     - report_generated_at: UTC timestamp of this request.
     """
+    verify_pet_owner(pet_id, current_user, supabase)
     result = (
         supabase.table("episodes")
         .select(_EPISODE_FIELDS)
@@ -208,12 +212,13 @@ def _build_pdf(report: dict, _compress: bool = True) -> bytes:
 
 
 @router.get("/vet-report/{pet_id}/pdf")
-def get_vet_report_pdf(pet_id: str):
+@limiter.limit("30/minute")
+def get_vet_report_pdf(pet_id: str, request: Request = None, current_user: dict = Depends(get_current_user)):
     """
     Return a PDF version of the vet report.
     Delegates entirely to get_vet_report() — no additional DB queries.
     """
-    report = get_vet_report(pet_id)
+    report = get_vet_report(pet_id, current_user)
     pdf_bytes = _build_pdf(report)
     return Response(
         content=pdf_bytes,

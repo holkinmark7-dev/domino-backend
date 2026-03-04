@@ -19,12 +19,29 @@ import sys
 import os
 import unittest
 import subprocess
+import pytest
 from unittest.mock import MagicMock, patch
+from contextlib import ExitStack
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 import routers.chat as chat_module
 from schemas.chat import ChatMessage
+
+_ONBOARDING_COMPLETE = {"complete": True, "next_question": None, "phase": "complete"}
+
+@pytest.fixture(autouse=True)
+def mock_onboarding_status():
+    with ExitStack() as stack:
+        stack.enter_context(patch(
+            "routers.services.memory.get_onboarding_status",
+            return_value=_ONBOARDING_COMPLETE,
+        ))
+        stack.enter_context(patch(
+            "routers.services.onboarding_router.get_onboarding_status",
+            return_value=_ONBOARDING_COMPLETE,
+        ))
+        yield
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -133,18 +150,19 @@ def _call_create(
         patch("routers.chat.process_event", return_value={
             "episode_id": "ep-test-1", "action": "updated",
         }),
-        patch("routers.chat.get_symptom_stats", return_value={
+        patch("routers.services.clinical_router.get_symptom_stats", return_value={
             "today": 0, "last_hour": 0, "last_24h": 0,
         }),
         patch("routers.chat.get_recent_events", return_value=recent_events or []),
         patch("routers.chat.get_medical_events", return_value=medical_events or []),
-        patch("routers.chat.check_recurrence", return_value=False),
-        patch("routers.chat.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
+        patch("routers.services.clinical_router.get_medical_events", return_value=medical_events or []),
+        patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+        patch("routers.services.decision_postprocess.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
         patch("routers.chat.update_episode_escalation"),
         patch("routers.chat.generate_ai_response", return_value="stub AI response"),
         patch("routers.chat.save_event"),
         patch("routers.chat.save_medical_event"),
-        patch("routers.chat.calculate_risk_score", return_value={
+        patch("routers.services.decision_postprocess.calculate_risk_score", return_value={
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
@@ -211,9 +229,9 @@ class TestChatFixes(unittest.TestCase):
 
         original_generate = chat_module.generate_ai_response
 
-        def _capture_generate(**kwargs):
-            if kwargs.get("clinical_decision"):
-                captured_decision["reaction_type"] = kwargs["clinical_decision"].get("reaction_type")
+        def _capture_generate(req):
+            if req.clinical_decision:
+                captured_decision["reaction_type"] = req.clinical_decision.get("reaction_type")
             return "stub"
 
         msg = _make_message("рвота", pet_id=_PET_ID)
@@ -233,16 +251,17 @@ class TestChatFixes(unittest.TestCase):
             patch("routers.chat.extract_event_data", return_value=json.dumps(extracted)),
             patch("routers.chat.get_pet_profile", return_value={"name": "Бони", "species": "dog", "birth_date": "2022-01-01"}),
             patch("routers.chat.process_event", return_value={"episode_id": "ep-1", "action": "updated"}),
-            patch("routers.chat.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
+            patch("routers.services.clinical_router.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
             patch("routers.chat.get_recent_events", return_value=[]),   # ← no prior history
             patch("routers.chat.get_medical_events", return_value=[]),
-            patch("routers.chat.check_recurrence", return_value=False),
-            patch("routers.chat.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
+            patch("routers.services.clinical_router.get_medical_events", return_value=[]),
+            patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+            patch("routers.services.decision_postprocess.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
             patch("routers.chat.update_episode_escalation"),
             patch("routers.chat.generate_ai_response", side_effect=_capture_generate),
             patch("routers.chat.save_event"),
             patch("routers.chat.save_medical_event"),
-            patch("routers.chat.calculate_risk_score", return_value={"risk_score": 5, "calculated_escalation": "MODERATE"}),
+            patch("routers.services.decision_postprocess.calculate_risk_score", return_value={"risk_score": 5, "calculated_escalation": "MODERATE"}),
         ):
             chat_module.create_chat_message(msg)
 
@@ -255,9 +274,9 @@ class TestChatFixes(unittest.TestCase):
     def test_with_prior_history_is_repeated(self):
         captured_decision = {}
 
-        def _capture_generate(**kwargs):
-            if kwargs.get("clinical_decision"):
-                captured_decision["reaction_type"] = kwargs["clinical_decision"].get("reaction_type")
+        def _capture_generate(req):
+            if req.clinical_decision:
+                captured_decision["reaction_type"] = req.clinical_decision.get("reaction_type")
             return "stub"
 
         msg = _make_message("рвота", pet_id=_PET_ID)
@@ -281,16 +300,17 @@ class TestChatFixes(unittest.TestCase):
             patch("routers.chat.extract_event_data", return_value=json.dumps(extracted)),
             patch("routers.chat.get_pet_profile", return_value={"name": "Бони", "species": "dog", "birth_date": "2022-01-01"}),
             patch("routers.chat.process_event", return_value={"episode_id": "ep-1", "action": "updated"}),
-            patch("routers.chat.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
+            patch("routers.services.clinical_router.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
             patch("routers.chat.get_recent_events", return_value=prior_events),  # ← has prior history
             patch("routers.chat.get_medical_events", return_value=[]),
-            patch("routers.chat.check_recurrence", return_value=False),
-            patch("routers.chat.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
+            patch("routers.services.clinical_router.get_medical_events", return_value=[]),
+            patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+            patch("routers.services.decision_postprocess.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
             patch("routers.chat.update_episode_escalation"),
             patch("routers.chat.generate_ai_response", side_effect=_capture_generate),
             patch("routers.chat.save_event"),
             patch("routers.chat.save_medical_event"),
-            patch("routers.chat.calculate_risk_score", return_value={"risk_score": 5, "calculated_escalation": "MODERATE"}),
+            patch("routers.services.decision_postprocess.calculate_risk_score", return_value={"risk_score": 5, "calculated_escalation": "MODERATE"}),
         ):
             chat_module.create_chat_message(msg)
 
@@ -303,8 +323,8 @@ class TestChatFixes(unittest.TestCase):
     def test_dialogue_mode_clinical_escalation(self):
         captured = {}
 
-        def _capture_generate(**kwargs):
-            captured["dialogue_mode"] = kwargs.get("dialogue_mode")
+        def _capture_generate(req):
+            captured["dialogue_mode"] = req.dialogue_mode
             return "stub"
 
         msg = _make_message("кот тужится уже несколько часов", pet_id=_PET_ID)
@@ -324,16 +344,17 @@ class TestChatFixes(unittest.TestCase):
             patch("routers.chat.extract_event_data", return_value=json.dumps(extracted)),
             patch("routers.chat.get_pet_profile", return_value={"name": "Мурка", "species": "cat", "birth_date": "2020-01-01"}),
             patch("routers.chat.process_event", return_value={"episode_id": "ep-1", "action": "updated"}),
-            patch("routers.chat.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
+            patch("routers.services.clinical_router.get_symptom_stats", return_value={"today": 0, "last_hour": 0, "last_24h": 0}),
             patch("routers.chat.get_recent_events", return_value=[]),
             patch("routers.chat.get_medical_events", return_value=[]),
-            patch("routers.chat.check_recurrence", return_value=False),
-            patch("routers.chat.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
+            patch("routers.services.clinical_router.get_medical_events", return_value=[]),
+            patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+            patch("routers.services.decision_postprocess.apply_cross_symptom_override", side_effect=lambda **kw: kw["decision"]),
             patch("routers.chat.update_episode_escalation"),
             patch("routers.chat.generate_ai_response", side_effect=_capture_generate),
             patch("routers.chat.save_event"),
             patch("routers.chat.save_medical_event"),
-            patch("routers.chat.calculate_risk_score", return_value={"risk_score": 8, "calculated_escalation": "CRITICAL"}),
+            patch("routers.services.decision_postprocess.calculate_risk_score", return_value={"risk_score": 8, "calculated_escalation": "CRITICAL"}),
         ):
             chat_module.create_chat_message(msg)
 

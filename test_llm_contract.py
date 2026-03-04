@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 # ─── Import build_missing_facts + count_questions from chat.py ───────────────
-from routers.chat import build_missing_facts, count_questions
+from routers.services.chat_helpers import build_missing_facts, count_questions
 
 # ─── Import generate_ai_response from ai.py ───────────────────────────────────
 import routers.services.ai as ai_module
-from routers.services.ai import generate_ai_response
+from routers.services.ai import generate_ai_response, AIResponseRequest
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ def _call_generate(contract, extra_system_override=None):
     mock_client.chat.completions.create.side_effect = fake_create
 
     with patch.object(ai_module, "client", mock_client):
-        result = generate_ai_response(
+        result = generate_ai_response(AIResponseRequest(
             pet_profile={"name": "Бони", "species": "dog", "breed": "beagle", "birth_date": "2020-01-01"},
             recent_events=[],
             user_message="У Бони понос уже 3 раза за час",
@@ -64,7 +64,7 @@ def _call_generate(contract, extra_system_override=None):
             previous_assistant_text=None,
             strict_override=extra_system_override,
             llm_contract=contract,
-        )
+        ))
 
     system_msg = captured["messages"][0]["content"] if captured.get("messages") else ""
     user_msg = captured["messages"][1]["content"] if len(captured.get("messages", [])) > 1 else ""
@@ -190,12 +190,12 @@ class TestContractBlockInjection(unittest.TestCase):
         mock_client.chat.completions.create.side_effect = fake_create
 
         with patch.object(ai_module, "client", mock_client):
-            generate_ai_response(
+            generate_ai_response(AIResponseRequest(
                 pet_profile={"name": "X", "species": "dog", "breed": "lab", "birth_date": "2020-01-01"},
                 recent_events=[],
                 user_message="test",
                 llm_contract=None,
-            )
+            ))
 
         system_msg = captured["messages"][0]["content"]
         self.assertNotIn("LLM CONTRACT", system_msg)

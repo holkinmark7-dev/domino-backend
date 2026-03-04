@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from routers.services.clinical_engine import build_clinical_decision
 from routers.services.risk_engine import ESCALATION_ORDER
-from routers.chat import escalate_min, apply_monotonic_lock
+from routers.services.chat_helpers import escalate_min, apply_monotonic_lock
 
 
 # ─────────────────────────────────────────────────────────────────────────────

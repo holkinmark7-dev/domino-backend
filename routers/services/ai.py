@@ -1,8 +1,29 @@
 from openai import OpenAI
 from config import OPENAI_API_KEY
 from routers.services.response_templates import select_template, get_phase_prefix
+from dataclasses import dataclass
+from typing import Optional
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+@dataclass
+class AIResponseRequest:
+    pet_profile: dict
+    recent_events: list
+    user_message: str
+    urgency_score: Optional[int] = 0
+    risk_level: Optional[str] = None
+    memory_context: str = "No prior medical history."
+    clinical_decision: Optional[dict] = None
+    dialogue_mode: str = "normal"
+    previous_assistant_text: Optional[str] = None
+    strict_override: Optional[str] = None
+    llm_contract: Optional[dict] = None
+    message_mode: str = "CLINICAL"
+    client_time: Optional[str] = None
+    owner_name: Optional[str] = None
+    chat_history: Optional[list] = None
 
 
 def _build_actions_block(clinical_decision: dict) -> str:
@@ -47,24 +68,24 @@ def _build_actions_block(clinical_decision: dict) -> str:
         )
 
 
-def generate_ai_response(pet_profile: dict, recent_events: list, user_message: str, urgency_score: int = 0, risk_level: str = None, memory_context: str = "No prior medical history.", clinical_decision=None, dialogue_mode: str = "normal", previous_assistant_text: str = None, strict_override: str = None, llm_contract: dict = None, message_mode: str = "CLINICAL", client_time: str = None, owner_name: str = None, chat_history: list = None):
+def generate_ai_response(req: AIResponseRequest) -> str:
     """
     Генерация AI-ответа с учётом профиля, истории и уровня срочности
     """
 
-    if urgency_score is None:
+    if req.urgency_score is None:
         urgency_instructions = (
             "Urgency could not be determined automatically. "
             "Assess the situation yourself based on the user message. "
             "If in doubt, recommend consulting a veterinarian."
         )
-    elif urgency_score == 0:
+    elif req.urgency_score == 0:
         urgency_instructions = "This is not concerning. Provide calm guidance. Do not recommend a vet."
-    elif urgency_score == 1:
+    elif req.urgency_score == 1:
         urgency_instructions = "Mild situation. Suggest monitoring and practical steps. Do not push vet visit."
-    elif urgency_score == 2:
+    elif req.urgency_score == 2:
         urgency_instructions = "Moderate concern. Recommend contacting a veterinarian if symptoms persist."
-    elif urgency_score == 3:
+    elif req.urgency_score == 3:
         urgency_instructions = "High concern. Clearly recommend urgent veterinary attention."
     else:
         urgency_instructions = (
@@ -74,14 +95,14 @@ def generate_ai_response(pet_profile: dict, recent_events: list, user_message: s
         )
 
     # When clinical_decision is present — urgency_score is irrelevant
-    if clinical_decision:
+    if req.clinical_decision:
         urgency_instructions = ""
 
     clinical_escalation_block = ""
-    if dialogue_mode == "clinical_escalation" and clinical_decision:
-        _dlg_level = clinical_decision["escalation"]
-        _response_type = clinical_decision.get("response_type", "ASSESS")
-        _episode_phase = clinical_decision.get("episode_phase", "initial")
+    if req.dialogue_mode == "clinical_escalation" and req.clinical_decision:
+        _dlg_level = req.clinical_decision["escalation"]
+        _response_type = req.clinical_decision.get("response_type", "ASSESS")
+        _episode_phase = req.clinical_decision.get("episode_phase", "initial")
 
         if _response_type == "ACTION":
             _strategy = """\
@@ -132,7 +153,7 @@ Response type: ASSESS
 - Ask necessary medical clarification.
 - Calm tone."""
 
-        _reaction = clinical_decision.get("reaction_type", "normal_progress")
+        _reaction = req.clinical_decision.get("reaction_type", "normal_progress")
 
         if _reaction == "repeated_symptom":
             _reaction_tone = "Tone: Shorten introduction. Do not re-summarize previous episode."
@@ -153,7 +174,7 @@ Never reuse the same opening sentence as the previous assistant response.
 {_strategy}{chr(10) + _reaction_tone if _reaction_tone else ""}"""
 
     escalation_instructions = ""
-    if "Escalation flag: high_repetition" in memory_context:
+    if "Escalation flag: high_repetition" in req.memory_context:
         escalation_instructions = """
 Escalation mode (ACTIVE - HIGH REPETITION):
 If "Escalation flag: high_repetition" is present:
@@ -166,7 +187,7 @@ If "Escalation flag: high_repetition" is present:
 """
 
     continuation_instructions = ""
-    if "Temporal status: continuation" in memory_context:
+    if "Temporal status: continuation" in req.memory_context:
         continuation_instructions = """
 Continuation mode (ACTIVE):
 If "Temporal status: continuation" is present:
@@ -180,9 +201,9 @@ If "Temporal status: continuation" is present:
 """
 
     contract_block = ""
-    if llm_contract:
-        known_facts = llm_contract.get("known_facts", {})
-        allowed_questions = llm_contract.get("allowed_questions", [])
+    if req.llm_contract:
+        known_facts = req.llm_contract.get("known_facts", {})
+        allowed_questions = req.llm_contract.get("allowed_questions", [])
 
         known_facts_str = "\n".join(
             f"- {k}: {v}" for k, v in known_facts.items()
@@ -195,9 +216,9 @@ If "Temporal status: continuation" is present:
         contract_block = f"""
 LLM CONTRACT (STRICT MODE):
 
-Risk level: {llm_contract.get("risk_level")}
-Response type: {llm_contract.get("response_type")}
-Episode phase: {llm_contract.get("episode_phase")}
+Risk level: {req.llm_contract.get("risk_level")}
+Response type: {req.llm_contract.get("response_type")}
+Episode phase: {req.llm_contract.get("episode_phase")}
 
 KNOWN FACTS (DO NOT ASK ABOUT THESE):
 {known_facts_str}
@@ -206,7 +227,7 @@ ALLOWED QUESTIONS (YOU MAY ASK ONLY THESE):
 {allowed_questions_str}
 
 MAX QUESTIONS ALLOWED:
-{llm_contract.get("max_questions")}
+{req.llm_contract.get("max_questions")}
 
 STRICT RULES:
 - You MUST NOT ask about known facts.
@@ -215,15 +236,15 @@ STRICT RULES:
 - You MUST NOT escalate beyond provided Risk level.
 """
 
-    _pet_name = (pet_profile.get("name") or "питомец") if pet_profile else "питомец"
-    _pet_species = (pet_profile.get("species") or "").lower()
-    _pet_gender = (pet_profile.get("gender") or "") if pet_profile else ""
-    _pet_neutered = pet_profile.get("neutered") if pet_profile else None
-    _pet_age = pet_profile.get("age_years") if pet_profile else None
-    _pet_breed = (pet_profile.get("breed") or "неизвестна") if pet_profile else "неизвестна"
-    _pet_color = (pet_profile.get("color") or "") if pet_profile else ""
-    _pet_weight = pet_profile.get("weight_kg") if pet_profile else None
-    _pet_medical = pet_profile.get("medical") if pet_profile else None
+    _pet_name = (req.pet_profile.get("name") or "питомец") if req.pet_profile else "питомец"
+    _pet_species = (req.pet_profile.get("species") or "").lower()
+    _pet_gender = (req.pet_profile.get("gender") or "") if req.pet_profile else ""
+    _pet_neutered = req.pet_profile.get("neutered") if req.pet_profile else None
+    _pet_age = req.pet_profile.get("age_years") if req.pet_profile else None
+    _pet_breed = (req.pet_profile.get("breed") or "неизвестна") if req.pet_profile else "неизвестна"
+    _pet_color = (req.pet_profile.get("color") or "") if req.pet_profile else ""
+    _pet_weight = req.pet_profile.get("weight_kg") if req.pet_profile else None
+    _pet_medical = req.pet_profile.get("medical") if req.pet_profile else None
 
     # Медкарта
     _chronic = ""
@@ -270,7 +291,7 @@ STRICT RULES:
     )
 
     _off_topic_block = ""
-    if not clinical_decision:
+    if not req.clinical_decision:
         _off_topic_block = (
             "\nВАЖНО: Ты отвечаешь ТОЛЬКО на вопросы о здоровье и самочувствии питомца.\n"
             "Если пользователь спрашивает о развлечениях, играх, прогулках, еде как образе жизни — "
@@ -279,7 +300,7 @@ STRICT RULES:
         )
 
     _redundancy_block = ""
-    if previous_assistant_text:
+    if req.previous_assistant_text:
         _redundancy_block = (
             "\nАНТИ-ПОВТОР (СТРОГО):\n"
             "Предыдущий ответ уже был отправлен. НЕ повторяй:\n"
@@ -290,12 +311,12 @@ STRICT RULES:
             "- задай уточняющий вопрос если фаза CLARIFY/ASSESS\n"
             "- оцени динамику: стало лучше или хуже\n"
             "- если ACTION — дай новый шаг или уточни предыдущий\n"
-            f"Предыдущий ответ (первые 300 символов): {(previous_assistant_text or '')[:300]}\n"
+            f"Предыдущий ответ (первые 300 символов): {(req.previous_assistant_text or '')[:300]}\n"
         )
 
-    if message_mode == "REGISTRATION_PROMPT":
-        _pet_name_reg = pet_profile.get("name") if pet_profile else "питомец"
-        _owner_reg = owner_name or ""
+    if req.message_mode == "REGISTRATION_PROMPT":
+        _pet_name_reg = req.pet_profile.get("name") if req.pet_profile else "питомец"
+        _owner_reg = req.owner_name or ""
         _address_reg = f"{_owner_reg}, " if _owner_reg else ""
 
         system_block = (
@@ -316,11 +337,11 @@ STRICT RULES:
             f"Максимум 3 предложения.\n"
             f"Отвечай только на русском языке.\n"
         )
-        user_prompt = f"Сообщение пользователя: {user_message}"
+        user_prompt = f"Сообщение пользователя: {req.user_message}"
 
-    elif message_mode == "ONBOARDING_COMPLETE":
-        _pet_name_done = pet_profile.get("name") if pet_profile else "питомец"
-        _owner = owner_name or ""
+    elif req.message_mode == "ONBOARDING_COMPLETE":
+        _pet_name_done = req.pet_profile.get("name") if req.pet_profile else "питомец"
+        _owner = req.owner_name or ""
         _address_done = f"{_owner}! " if _owner else ""
 
         system_block = (
@@ -334,19 +355,19 @@ STRICT RULES:
             f"Никогда не начинай с 'Я понимаю' или 'Конечно'.\n"
             f"Отвечай только на русском языке.\n"
         )
-        user_prompt = f"Сообщение пользователя: {user_message}"
+        user_prompt = f"Сообщение пользователя: {req.user_message}"
 
-    elif message_mode == "ONBOARDING_OBSERVER":
+    elif req.message_mode == "ONBOARDING_OBSERVER":
         # AI-наблюдатель: пользователь задал вопрос во время онбординга
         # AI видит ВСЮ историю чата, отвечает на вопрос, возвращает к шагу
 
-        _pet_name_obs = (pet_profile.get("name") or "питомец") if pet_profile else "питомец"
-        _pet_species_obs = (pet_profile.get("species") or "").lower() if pet_profile else ""
-        _owner_obs = owner_name or ""
+        _pet_name_obs = (req.pet_profile.get("name") or "питомец") if req.pet_profile else "питомец"
+        _pet_species_obs = (req.pet_profile.get("species") or "").lower() if req.pet_profile else ""
+        _owner_obs = req.owner_name or ""
 
         # Текущий шаг онбординга для возврата
         _current_step_label = ""
-        if strict_override:
+        if req.strict_override:
             _step_labels = {
                 "species": "спросить кошка или собака",
                 "name": "спросить кличку питомца",
@@ -358,17 +379,16 @@ STRICT RULES:
                 "breed": "спросить породу",
                 "color": "спросить окрас",
                 "features": "спросить про особые приметы",
-                "photo": "предложить загрузить фото",
                 "chip_id_ask": "спросить про микрочип",
                 "stamp_id_ask": "спросить про клеймо",
             }
-            _current_step_label = _step_labels.get(strict_override, "продолжить заполнение профиля")
+            _current_step_label = _step_labels.get(req.strict_override, "продолжить заполнение профиля")
 
         # Собираем историю чата в строку
         _history_block = ""
-        if chat_history:
+        if req.chat_history:
             _lines = []
-            for msg in chat_history[-20:]:
+            for msg in req.chat_history[-20:]:
                 _role = msg.get("role", "user")
                 _text = msg.get("message", "")[:200]
                 if _role == "user":
@@ -400,15 +420,15 @@ STRICT RULES:
         )
 
         if _history_block:
-            user_prompt = f"История разговора:\n{_history_block}\n\nНовое сообщение пользователя: {user_message}"
+            user_prompt = f"История разговора:\n{_history_block}\n\nНовое сообщение пользователя: {req.user_message}"
         else:
-            user_prompt = f"Сообщение пользователя: {user_message}"
+            user_prompt = f"Сообщение пользователя: {req.user_message}"
 
-    elif message_mode == "ONBOARDING":
+    elif req.message_mode == "ONBOARDING":
         # Детерминированные вопросы — LLM НЕ МОЖЕТ менять суть
 
         # ШАГ 0 — имя владельца (особый случай)
-        if strict_override == "owner_name":
+        if req.strict_override == "owner_name":
             _welcome_block = (
                 "Это ПЕРВОЕ сообщение пользователя в приложении.\n"
                 "Начни с тёплого приветствия (учитывай время суток).\n"
@@ -419,7 +439,7 @@ STRICT RULES:
             )
             system_block = (
                 f"Ты — Dominik, тёплый помощник для владельцев питомцев.\n"
-                f"Текущее время: {client_time or 'неизвестно'}.\n"
+                f"Текущее время: {req.client_time or 'неизвестно'}.\n"
                 f"Учитывай время суток: 6-12 'Доброе утро', 12-18 'Добрый день', 18-23 'Добрый вечер'.\n"
                 f"\n"
                 f"СТРОГИЕ ПРАВИЛА:\n"
@@ -430,15 +450,15 @@ STRICT RULES:
                 f"\n"
                 f"{_welcome_block}"
             )
-            user_prompt = f"Сообщение пользователя: {user_message}"
+            user_prompt = f"Сообщение пользователя: {req.user_message}"
         else:
             # Получаем имя из профиля и владельца
             _pet_name_hint = ""
             _owner_name_hint = ""
-            if pet_profile and pet_profile.get("name"):
-                _pet_name_hint = pet_profile.get("name")
-            if owner_name:
-                _owner_name_hint = owner_name
+            if req.pet_profile and req.pet_profile.get("name"):
+                _pet_name_hint = req.pet_profile.get("name")
+            if req.owner_name:
+                _owner_name_hint = req.owner_name
 
             # Обращение к владельцу по имени если известно
             _address = f"{_owner_name_hint}, " if _owner_name_hint else ""
@@ -452,7 +472,6 @@ STRICT RULES:
                 "neutered": f"Спроси кастрирован ли {_pet_name_hint} — используй правильную форму по полу. Одно предложение.",
                 "age": f"Спроси сколько лет {_pet_name_hint} или когда родился. Одно предложение.",
                 # НЕОБЯЗАТЕЛЬНЫЕ
-                "photo": f"Предложи загрузить фото {_pet_name_hint} для аватарки профиля. Скажи что можно пропустить и добавить позже. Одно-два предложения.",
                 "breed": f"Спроси породу {_pet_name_hint}. Скажи что можно написать 'не знаю' и пропустить. Одно предложение.",
                 "color": f"Спроси окрас {_pet_name_hint}. Можно пропустить. Одно предложение.",
                 "features": f"Спроси есть ли особые приметы у {_pet_name_hint} — пятна, шрамы, необычный окрас. Можно пропустить. Одно предложение.",
@@ -461,13 +480,13 @@ STRICT RULES:
             }
 
             _question_instruction = _onboarding_questions.get(
-                strict_override, "Спроси следующий вопрос о питомце."
+                req.strict_override, "Спроси следующий вопрос о питомце."
             )
 
             system_block = (
                 f"Ты — Dominik, тёплый помощник для владельцев питомцев.\n"
                 f"Сейчас ты заполняешь профиль питомца через диалог.\n"
-                f"Текущее время пользователя: {client_time or 'неизвестно'}.\n"
+                f"Текущее время пользователя: {req.client_time or 'неизвестно'}.\n"
                 f"\n"
                 f"СТРОГИЕ ПРАВИЛА:\n"
                 f"1. Задай РОВНО ОДИН вопрос — тот что указан ниже. Никаких других вопросов.\n"
@@ -482,9 +501,9 @@ STRICT RULES:
                 f"{_question_instruction}\n"
             )
 
-            user_prompt = f"Сообщение пользователя: {user_message}"
+            user_prompt = f"Сообщение пользователя: {req.user_message}"
 
-    elif message_mode == "CASUAL":
+    elif req.message_mode == "CASUAL":
         system_block = (
             f"Ты — Dominik, тёплый и заботливый помощник для владельцев питомцев.\n"
             f"Тебя создали чтобы ты был рядом — как друг который всегда готов помочь.\n"
@@ -492,7 +511,7 @@ STRICT RULES:
             f"Ты говоришь с ХОЗЯИНОМ питомца, не с питомцем.\n"
             f"Упоминай питомца по имени {_pet_name} в третьем лице.\n"
             f"Тон: тёплый, живой, на ты. Короткие фразы. Без канцелярита.\n"
-            f"Текущее время пользователя: {client_time or 'неизвестно'}.\n"
+            f"Текущее время пользователя: {req.client_time or 'неизвестно'}.\n"
             f"\n"
             f"СТРОГИЕ ПРАВИЛА:\n"
             f"1. НЕ спрашивай про характер, игры, прогулки, привычки.\n"
@@ -503,19 +522,19 @@ STRICT RULES:
             f"6. Отвечай только на русском языке.\n"
             f"Никогда не начинай с 'Я понимаю' или 'Конечно'.\n"
         )
-    elif message_mode == "PROFILE":
+    elif req.message_mode == "PROFILE":
         system_block = (
             tone_block
             + f"Ты — Dominik, заботливый помощник для владельцев питомцев.\n"
             + f"Ты говоришь с ХОЗЯИНОМ питомца, не с питомцем. Упоминай питомца по имени {_pet_name} в третьем лице — 'Боня', 'у Бони', 'Боня сейчас'. Никогда не обращайся напрямую к питомцу.\n"
-            + f"Текущее время пользователя: {client_time or 'неизвестно'}.\n"
+            + f"Текущее время пользователя: {req.client_time or 'неизвестно'}.\n"
             + f"Приветствуй ТОЛЬКО если previous_assistant_text пустой или None — значит это первое сообщение сессии.\n"
             + f"Если уже общались (previous_assistant_text не пустой) — без приветствий, продолжай разговор.\n"
             + f"Учитывай время суток: 6-12 'Доброе утро', 12-18 'Добрый день', 18-23 'Добрый вечер', 23-6 'Не сплю, всегда рядом'.\n"
             + f"Используй данные профиля питомца чтобы ответ был личным и точным.\n"
             + f"Если вопрос касается здоровья — мягко уточни детали.\n"
             + f"Отвечай только на русском языке. Никаких английских слов.\n"
-            + (f"OVERRIDE: {strict_override}\n" if strict_override else "")
+            + (f"OVERRIDE: {req.strict_override}\n" if req.strict_override else "")
         )
     else:  # CLINICAL
         system_block = (
@@ -524,7 +543,7 @@ STRICT RULES:
             + _redundancy_block
             + f"Ты — Dominik. Сейчас ты в режиме медицинской помощи.\n"
             + f"Ты говоришь с ХОЗЯИНОМ питомца, не с питомцем. Упоминай питомца по имени {_pet_name} в третьем лице — 'Боня', 'у Бони', 'Боня сейчас'. Никогда не обращайся напрямую к питомцу.\n"
-            + f"Текущее время пользователя: {client_time or 'неизвестно'}.\n"
+            + f"Текущее время пользователя: {req.client_time or 'неизвестно'}.\n"
             + f"Приветствуй ТОЛЬКО если previous_assistant_text пустой или None — значит это первое сообщение сессии.\n"
             + f"Если уже общались (previous_assistant_text не пустой) — без приветствий, продолжай разговор.\n"
             + f"Учитывай время суток: 6-12 'Доброе утро', 12-18 'Добрый день', 18-23 'Добрый вечер', 23-6 'Не сплю, всегда рядом'.\n"
@@ -533,18 +552,18 @@ STRICT RULES:
             + "Твоя роль: здоровье животного. Не советы по развлечениям, питанию образу жизни.\n"
             + "Если clinical_decision передан — следуй ему строго. Он важнее urgency_score.\n"
             + "Если escalation >= MODERATE — явно упомяни количество эпизодов.\n"
-            + (f"OVERRIDE: {strict_override}\n" if strict_override else "")
+            + (f"OVERRIDE: {req.strict_override}\n" if req.strict_override else "")
             + contract_block
             + clinical_escalation_block
         )
 
-    if message_mode == "CASUAL":
-        user_prompt = f"Сообщение: {user_message}"
+    if req.message_mode == "CASUAL":
+        user_prompt = f"Сообщение: {req.user_message}"
 
-    elif message_mode == "PROFILE":
+    elif req.message_mode == "PROFILE":
         _mem_short = (
-            memory_context[:300]
-            if memory_context and memory_context != "No prior medical history."
+            req.memory_context[:300]
+            if req.memory_context and req.memory_context != "No prior medical history."
             else "нет"
         )
         user_prompt = f"""\
@@ -552,60 +571,60 @@ STRICT RULES:
 Важные медицинские факты (если есть):
 {_mem_short}
 
-Сообщение: {user_message}"""
+Сообщение: {req.user_message}"""
 
     else:  # CLINICAL
         user_prompt = f"""\
 {_profile_block}
 Medical history:
-{memory_context}
+{req.memory_context}
 
 Recent events:
-{recent_events}
+{req.recent_events}
 
-Urgency level: {urgency_score}
-Risk level: {risk_level}
+Urgency level: {req.urgency_score}
+Risk level: {req.risk_level}
 {escalation_instructions}{continuation_instructions}
 Instructions:
 {urgency_instructions}
 
 Clinical decision:
-Symptom: {clinical_decision["symptom"] if clinical_decision else None}
-Episodes today: {clinical_decision["stats"]["today"] if clinical_decision else None}
-Episodes last hour: {clinical_decision["stats"]["last_hour"] if clinical_decision else None}
-Escalation level: {clinical_decision["escalation"] if clinical_decision else None}
-Stop questioning: {clinical_decision["stop_questioning"] if clinical_decision else None}
-Override urgency: {clinical_decision["override_urgency"] if clinical_decision else None}
-Consecutive escalations: {clinical_decision.get("consecutive_escalations", 0) if clinical_decision else None}
-Consecutive critical: {clinical_decision.get("consecutive_critical", 0) if clinical_decision else None}
-Episode phase: {clinical_decision.get("episode_phase") if clinical_decision else None}
-Reaction type: {clinical_decision.get("reaction_type", "normal_progress") if clinical_decision else None}
-Response type: {clinical_decision.get("response_type") if clinical_decision else None}
-User intent: {clinical_decision.get("user_intent") if clinical_decision else None}
-Constraint: {clinical_decision.get("constraint") if clinical_decision else None}
+Symptom: {req.clinical_decision["symptom"] if req.clinical_decision else None}
+Episodes today: {req.clinical_decision["stats"]["today"] if req.clinical_decision else None}
+Episodes last hour: {req.clinical_decision["stats"]["last_hour"] if req.clinical_decision else None}
+Escalation level: {req.clinical_decision["escalation"] if req.clinical_decision else None}
+Stop questioning: {req.clinical_decision["stop_questioning"] if req.clinical_decision else None}
+Override urgency: {req.clinical_decision["override_urgency"] if req.clinical_decision else None}
+Consecutive escalations: {req.clinical_decision.get("consecutive_escalations", 0) if req.clinical_decision else None}
+Consecutive critical: {req.clinical_decision.get("consecutive_critical", 0) if req.clinical_decision else None}
+Episode phase: {req.clinical_decision.get("episode_phase") if req.clinical_decision else None}
+Reaction type: {req.clinical_decision.get("reaction_type", "normal_progress") if req.clinical_decision else None}
+Response type: {req.clinical_decision.get("response_type") if req.clinical_decision else None}
+User intent: {req.clinical_decision.get("user_intent") if req.clinical_decision else None}
+Constraint: {req.clinical_decision.get("constraint") if req.clinical_decision else None}
 
-Previous assistant summary: {previous_assistant_text or "none"}
+Previous assistant summary: {req.previous_assistant_text or "none"}
 
 User message:
-{user_message}"""
+{req.user_message}"""
 
     # --- DETERMINISTIC TEMPLATE OVERRIDE + CONTROLLED CONTEXT ---
-    # Only for CLINICAL mode when clinical_decision is available.
+    # Only for CLINICAL mode when req.clinical_decision is available.
     # Replaces the free-form user_prompt with a structured template + limited context block.
-    if message_mode == "CLINICAL" and clinical_decision:
-        template = select_template(clinical_decision.get("response_type"))
-        phase_prefix = get_phase_prefix(clinical_decision.get("episode_phase"))
+    if req.message_mode == "CLINICAL" and req.clinical_decision:
+        template = select_template(req.clinical_decision.get("response_type"))
+        phase_prefix = get_phase_prefix(req.clinical_decision.get("episode_phase"))
 
-        questions = llm_contract.get("allowed_questions", []) if llm_contract else []
+        questions = req.llm_contract.get("allowed_questions", []) if req.llm_contract else []
         questions_block = "\n".join(
             f"- Есть ли {q}?" for q in questions
         ) or "- (нет уточняющих вопросов)"
 
-        actions_block = _build_actions_block(clinical_decision)
+        actions_block = _build_actions_block(req.clinical_decision)
 
         deterministic_prompt = phase_prefix + template.format(
-            symptom=clinical_decision.get("symptom"),
-            episodes_today=clinical_decision["stats"]["today"],
+            symptom=req.clinical_decision.get("symptom"),
+            episodes_today=req.clinical_decision["stats"]["today"],
             questions_block=questions_block,
             actions_block=actions_block,
         )
@@ -618,20 +637,20 @@ User message:
                 return "-"
             return value
 
-        _food_item = _clean(clinical_decision.get("food"))
+        _food_item = _clean(req.clinical_decision.get("food"))
         _food_line = f"- Съеденное до симптома: {_food_item}\n" if _food_item != "-" else ""
 
         _history_block = (
-            f"- История болезней: {memory_context}\n"
-            if memory_context and memory_context != "No prior medical history."
+            f"- История болезней: {req.memory_context}\n"
+            if req.memory_context and req.memory_context != "No prior medical history."
             else ""
         )
 
         context_block = f"""Контекст:
-- Фаза эпизода: {_clean(clinical_decision.get("episode_phase"))}
-- Тип реакции: {_clean(clinical_decision.get("reaction_type"))}
-- Намерение пользователя: {_clean(clinical_decision.get("user_intent"))}
-- Ограничения: {_clean(clinical_decision.get("constraint"))}
+- Фаза эпизода: {_clean(req.clinical_decision.get("episode_phase"))}
+- Тип реакции: {_clean(req.clinical_decision.get("reaction_type"))}
+- Намерение пользователя: {_clean(req.clinical_decision.get("user_intent"))}
+- Ограничения: {_clean(req.clinical_decision.get("constraint"))}
 {_food_line}{_history_block}"""
 
         user_prompt = f"{deterministic_prompt}\n{context_block}\n"

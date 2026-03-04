@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from dependencies.auth import get_current_user, verify_pet_owner
+from dependencies.limiter import limiter
 from pydantic import BaseModel
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
@@ -6,6 +8,7 @@ from datetime import date, datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 from collections import Counter
 import calendar
+import re
 
 from routers.services.heatmap import heatmap_score
 
@@ -15,8 +18,21 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 ESCALATION_ORDER = {"LOW": 0, "MODERATE": 1, "HIGH": 2, "CRITICAL": 3}
 
 
+def _validate_date_str(date_str: str) -> str:
+    """Validate YYYY-MM-DD format to prevent injection into DB queries."""
+    if not date_str or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
+        raise HTTPException(status_code=422, detail="date_str must be in YYYY-MM-DD format")
+    try:
+        date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_str is not a valid date")
+    return date_str
+
+
 @router.get("/timeline/{pet_id}")
-def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter: str = "all"):
+@limiter.limit("30/minute")
+def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter: str = "all", request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     today = date.today()
     _year = year or today.year
     _month = month or today.month
@@ -99,7 +115,10 @@ def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter:
 
 
 @router.get("/timeline/{pet_id}/day")
-def get_timeline_day(pet_id: str, date_str: str):
+@limiter.limit("30/minute")
+def get_timeline_day(pet_id: str, date_str: str, request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
+    date_str = _validate_date_str(date_str)
     day_row = (
         supabase.table("timeline_days")
         .select("*")
@@ -137,6 +156,8 @@ def get_timeline_day(pet_id: str, date_str: str):
 
 
 def recalculate_day(pet_id: str, date_str: str = None):
+    if date_str:
+        _validate_date_str(date_str)
     _date = date_str or str(date.today())
 
     events = (
@@ -229,12 +250,16 @@ def recalculate_day(pet_id: str, date_str: str = None):
 
 
 @router.post("/timeline/{pet_id}/recalculate")
-def recalculate_day_endpoint(pet_id: str, date_str: str = None):
+@limiter.limit("30/minute")
+def recalculate_day_endpoint(pet_id: str, date_str: str = None, request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     return recalculate_day(pet_id=pet_id, date_str=date_str)
 
 
 @router.get("/timeline/{pet_id}/filter")
-def get_timeline_filtered(pet_id: str, event_type: str = "all", year: int = None, month: int = None):
+@limiter.limit("30/minute")
+def get_timeline_filtered(pet_id: str, event_type: str = "all", year: int = None, month: int = None, request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     today = date.today()
     _year = year or today.year
     _month = month or today.month
@@ -273,7 +298,9 @@ def get_timeline_filtered(pet_id: str, event_type: str = "all", year: int = None
 
 # ── Close episode ────────────────────────────────────────────────────────────
 @router.post("/timeline/{pet_id}/episode/{episode_id}/close")
-def close_episode(pet_id: str, episode_id: str):
+@limiter.limit("30/minute")
+def close_episode(pet_id: str, episode_id: str, request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     supabase.table("episodes").update({
@@ -295,7 +322,9 @@ class ClinicalActionPayload(BaseModel):
 
 
 @router.post("/timeline/{pet_id}/action")
-def add_clinical_action(pet_id: str, payload: ClinicalActionPayload):
+@limiter.limit("30/minute")
+def add_clinical_action(pet_id: str, payload: ClinicalActionPayload, request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     event_row = {
@@ -319,7 +348,9 @@ def add_clinical_action(pet_id: str, payload: ClinicalActionPayload):
 
 # ── Calendar heatmap endpoint ─────────────────────────────────────────────────
 @router.get("/calendar/{pet_id}")
-def get_calendar_heatmap(pet_id: str, months: int = Query(default=1, ge=1, le=6)):
+@limiter.limit("30/minute")
+def get_calendar_heatmap(pet_id: str, months: int = Query(default=1, ge=1, le=6), request: Request = None, current_user: dict = Depends(get_current_user)):
+    verify_pet_owner(pet_id, current_user, supabase)
     today = date.today()
     start_date = today - relativedelta(months=months)
 

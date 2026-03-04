@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from routers.chat import apply_monotonic_lock
+from routers.services.chat_helpers import apply_monotonic_lock
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from routers.chat import compute_episode_phase_v1
+from routers.services.chat_helpers import compute_episode_phase_v1
 
 
 class TestEpisodePhaseV1(unittest.TestCase):

@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(__file__))
 
 import routers.services.ai as ai_module
-from routers.services.ai import generate_ai_response
+from routers.services.ai import generate_ai_response, AIResponseRequest
 from routers.chat_history import _FOLLOWUP_MSG
 
 
@@ -69,7 +69,7 @@ def _call_with_pet_profile(pet_profile) -> str:
     }
 
     with patch.object(ai_module, "client", mock_client):
-        generate_ai_response(
+        generate_ai_response(AIResponseRequest(
             pet_profile=pet_profile,
             recent_events=[],
             user_message="Рвота снова",
@@ -77,7 +77,7 @@ def _call_with_pet_profile(pet_profile) -> str:
             risk_level="moderate",
             clinical_decision=clinical_decision,
             llm_contract=llm_contract,
-        )
+        ))
 
     return captured["messages"][0]["content"] if captured.get("messages") else ""
 
@@ -130,7 +130,7 @@ class TestDialogueToneBlock(unittest.TestCase):
     # T8: regression — vet assistant instruction still present after tone_block
     def test_regression_vet_assistant_still_in_system(self):
         system_msg = _call_with_pet_profile(_FULL_PROFILE)
-        self.assertIn("You are a veterinary clinical assistant", system_msg)
+        self.assertIn("медицинский AI-ассистент", system_msg)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

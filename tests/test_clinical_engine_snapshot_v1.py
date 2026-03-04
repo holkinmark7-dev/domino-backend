@@ -23,7 +23,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from routers.services.clinical_engine import CLINICAL_ENGINE_VERSION
-from routers.chat import compute_episode_phase_v1
+from routers.services.chat_helpers import compute_episode_phase_v1
 
 # Re-use the deterministic simulate_triage helper from the stress matrix
 from tests.test_clinical_stress_matrix import simulate_triage

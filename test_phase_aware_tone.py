@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from routers.services.response_templates import get_phase_prefix
 import routers.services.ai as ai_module
-from routers.services.ai import generate_ai_response
-from routers.chat import count_questions
+from routers.services.ai import generate_ai_response, AIResponseRequest
+from routers.services.chat_helpers import count_questions
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -109,7 +109,7 @@ def _call_generate_with_phase(episode_phase: str):
     }
 
     with patch.object(ai_module, "client", mock_client):
-        generate_ai_response(
+        generate_ai_response(AIResponseRequest(
             pet_profile={"name": "Бони", "species": "dog", "breed": "beagle", "birth_date": "2020-01-01"},
             recent_events=[],
             user_message="Рвота снова",
@@ -117,7 +117,7 @@ def _call_generate_with_phase(episode_phase: str):
             risk_level="moderate",
             clinical_decision=clinical_decision,
             llm_contract=llm_contract,
-        )
+        ))
 
     user_prompt = captured["messages"][1]["content"] if len(captured.get("messages", [])) > 1 else ""
     return user_prompt, clinical_decision, llm_contract

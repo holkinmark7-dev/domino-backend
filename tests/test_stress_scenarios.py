@@ -36,13 +36,31 @@ import sys
 import os
 import json
 import unittest
+import pytest
 from unittest.mock import MagicMock, patch
+from contextlib import ExitStack
 from datetime import datetime, timezone
+from freezegun import freeze_time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import routers.chat as chat_module
 from schemas.chat import ChatMessage
+
+_ONBOARDING_COMPLETE = {"complete": True, "next_question": None, "phase": "complete"}
+
+@pytest.fixture(autouse=True)
+def mock_onboarding_status():
+    with ExitStack() as stack:
+        stack.enter_context(patch(
+            "routers.services.memory.get_onboarding_status",
+            return_value=_ONBOARDING_COMPLETE,
+        ))
+        stack.enter_context(patch(
+            "routers.services.onboarding_router.get_onboarding_status",
+            return_value=_ONBOARDING_COMPLETE,
+        ))
+        yield
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,8 +159,9 @@ def _call_create(
     stub_sb = _stub_supabase()
     captured_gen: dict = {}
 
-    def _fake_generate(**kwargs):
-        captured_gen.update(kwargs)
+    def _fake_generate(req):
+        from dataclasses import asdict
+        captured_gen.update(asdict(req))
         return "stub AI response"
 
     with (
@@ -155,18 +174,19 @@ def _call_create(
         patch("routers.chat.process_event", return_value={
             "episode_id": "ep-stress-1", "action": "updated",
         }),
-        patch("routers.chat.get_symptom_stats",
+        patch("routers.services.clinical_router.get_symptom_stats",
               side_effect=lambda *a, **kw: dict(_stats)),
         patch("routers.chat.get_recent_events", return_value=[]),
         patch("routers.chat.get_medical_events", return_value=[]),
-        patch("routers.chat.check_recurrence", return_value=False),
-        patch("routers.chat.apply_cross_symptom_override",
+        patch("routers.services.clinical_router.get_medical_events", return_value=[]),
+        patch("routers.services.decision_postprocess.check_recurrence", return_value=False),
+        patch("routers.services.decision_postprocess.apply_cross_symptom_override",
               side_effect=lambda **kw: kw["decision"]),
         patch("routers.chat.update_episode_escalation"),
         patch("routers.chat.generate_ai_response", side_effect=_fake_generate),
         patch("routers.chat.save_event"),
         patch("routers.chat.save_medical_event"),
-        patch("routers.chat.calculate_risk_score", return_value={
+        patch("routers.services.decision_postprocess.calculate_risk_score", return_value={
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
@@ -194,6 +214,7 @@ def _dmode(gen_kwargs: dict) -> str | None:
 # S01–S05  GI class
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressGI(unittest.TestCase):
 
     def test_s01_single_vomiting_low(self):
@@ -263,6 +284,7 @@ class TestStressGI(unittest.TestCase):
 # S06–S08  RESPIRATORY class
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressRespiratory(unittest.TestCase):
 
     def test_s06_single_cough_low(self):
@@ -305,6 +327,7 @@ class TestStressRespiratory(unittest.TestCase):
 # S09–S10  INGESTION / TOXIC
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressIngestionToxic(unittest.TestCase):
 
     def test_s09_foreign_body_high(self):
@@ -334,6 +357,7 @@ class TestStressIngestionToxic(unittest.TestCase):
 # S11–S12  NEURO (seizure)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressNeuro(unittest.TestCase):
 
     def test_s11_seizure_no_duration_high(self):
@@ -367,6 +391,7 @@ class TestStressNeuro(unittest.TestCase):
 # S13  URINARY (cat + straining)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressUrinary(unittest.TestCase):
 
     def test_s13_urinary_cat_straining_critical(self):
@@ -386,6 +411,7 @@ class TestStressUrinary(unittest.TestCase):
 # S14  Absolute Critical (hyperthermia)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressAbsoluteCritical(unittest.TestCase):
 
     def test_s14_temperature_41_critical(self):
@@ -405,6 +431,7 @@ class TestStressAbsoluteCritical(unittest.TestCase):
 # S15  GENERAL class (mild lethargy)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressGeneral(unittest.TestCase):
 
     def test_s15_mild_lethargy_general_moderate(self):
@@ -424,6 +451,7 @@ class TestStressGeneral(unittest.TestCase):
 # S16–S17  Blood type + GDV overrides
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressBloodGDV(unittest.TestCase):
 
     def test_s16_coffee_ground_vomit_critical(self):
@@ -454,6 +482,7 @@ class TestStressBloodGDV(unittest.TestCase):
 # S18  Food context
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressFoodContext(unittest.TestCase):
 
     def test_s18_food_in_llm_contract_known_facts(self):
@@ -476,6 +505,7 @@ class TestStressFoodContext(unittest.TestCase):
 # S19–S20  No decision (off-topic / greeting)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@freeze_time("2024-06-15 12:00:00", tz_offset=0)
 class TestStressNoDecision(unittest.TestCase):
 
     def test_s19_greeting_no_debug(self):
