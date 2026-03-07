@@ -240,40 +240,44 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     if isinstance(current_user, dict) and message.user_id != current_user["id"]:
         return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
-    # Ownership check
-    _ownership = (
-        supabase.table("pets")
-        .select("id")
-        .eq("id", message.pet_id)
-        .eq("user_id", message.user_id)
-        .limit(1)
-        .execute()
-    )
-    if not _ownership.data:
-        return JSONResponse(
-            status_code=403,
-            content={"error": "pet not found or access denied"}
+    # Ownership check — skip during onboarding (no pet yet)
+    if message.pet_id:
+        _ownership = (
+            supabase.table("pets")
+            .select("id")
+            .eq("id", message.pet_id)
+            .eq("user_id", message.user_id)
+            .limit(1)
+            .execute()
         )
+        if not _ownership.data:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "pet not found or access denied"}
+            )
 
     ensure_user_exists(message.user_id)
 
-    # 1. Сохраняем сообщение
-    chat_data = supabase.table("chat").insert({
-        "user_id": message.user_id,
-        "pet_id": message.pet_id,
-        "message": message.message,
-        "role": "user",
-        "mode": "user",
-    }).execute()
-    logger.debug("USER INSERT DATA: %s", chat_data.data)
+    # 1. Сохраняем сообщение (skip empty — e.g. WELCOME request)
+    chat_data_list = []
+    if message.message and message.message.strip():
+        chat_data = supabase.table("chat").insert({
+            "user_id": message.user_id,
+            "pet_id": message.pet_id,
+            "message": message.message,
+            "role": "user",
+            "mode": "user",
+        }).execute()
+        chat_data_list = chat_data.data
+        logger.debug("USER INSERT DATA: %s", chat_data_list)
 
-    # 2. Сохраняем chat_message
-    save_event(
-        user_id=message.user_id,
-        pet_id=message.pet_id,
-        event_type="chat_message",
-        content=message.message,
-    )
+        # 2. Сохраняем chat_message
+        save_event(
+            user_id=message.user_id,
+            pet_id=message.pet_id,
+            event_type="chat_message",
+            content=message.message,
+        )
 
     # 3. Extraction + normalization + keyword overrides
     structured_data = _extract_and_normalize(message.message)
@@ -340,6 +344,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _onboarding_deterministic = _ob_result["onboarding_deterministic"]
     _ai_response_override = _ob_result["ai_response_override"]
     _chat_history = _ob_result["chat_history"]
+    _onboarding_pet_id = _ob_result.get("pet_id")
     if _ob_result["pet_profile_updated"]:
         pet_profile = _ob_result["pet_profile_updated"]
 
@@ -637,7 +642,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _linked_date = str(date.today()) if decision and structured_data.get("symptom") else None
 
     response_payload = {
-        "chat_saved": chat_data.data,
+        "chat_saved": chat_data_list,
         "pet_profile": pet_profile,
         "recent_events": recent_events,
         "structured_data": structured_data,
@@ -656,6 +661,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         "quick_replies": _quick_replies,
         "input_type": _input_type,
         "auto_follow": _auto_follow,
+        "pet_id": _onboarding_pet_id,
     }
 
     # Persist final triage escalation to episode (monotonic invariant)
