@@ -6,6 +6,7 @@ Replaces onboarding.py + onboarding_router.py.
 from enum import Enum
 
 from routers.services.memory import get_user_flags, update_user_flags
+from routers.services.onboarding_gemini import parse_pet_info, apply_parsed_to_flags, get_states_to_skip
 
 
 # ── Validation messages (used in Этап 5) ─────────────────────────────────────
@@ -161,8 +162,27 @@ def _handle_goal(user_input, pet_profile, user_flags):
 def _handle_pet_intro(user_input, pet_profile, user_flags):
     user_flags["pet_intro_raw"] = user_input
 
-    message = "Записал, спасибо! Уточню пару деталей 😊"
-    return _make_response(message, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile)
+    # Парсинг через Gemini
+    parsed = parse_pet_info(user_input)
+    user_flags = apply_parsed_to_flags(parsed, user_flags)
+
+    # Сохранить какие шаги пропускаем
+    skip = get_states_to_skip(parsed, user_flags)
+    user_flags["onboarding_skip"] = [s.value for s in skip]
+
+    # Micro-validation — живая реакция на кличку
+    pet_name = parsed.get("pet_name") or user_flags.get("pet_name", "")
+    if pet_name:
+        message = (
+            f"Записал! {pet_name} — звучит замечательно. "
+            f"Уже представляю такого персонажа 😄"
+        )
+    else:
+        message = "Записал, спасибо! Уточню пару деталей 😊"
+
+    return _make_response(
+        message, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
+    )
 
 
 def _handle_species_clarify(user_input, pet_profile, user_flags):
@@ -276,13 +296,13 @@ def _handle_gender(user_input, pet_profile, user_flags):
 
 
 def _handle_neutered(user_input, pet_profile, user_flags):
-    pet_name = pet_profile.get("name", "ваш питомец")
+    pet_name = pet_profile.get("name") or user_flags.get("pet_name", "ваш питомец")
     gender = user_flags.get("gender", "")
 
     if gender == "самец":
-        message = f"{pet_name} кастрирован?"
+        message = f"Я уже понял что {pet_name} — мальчик. Он кастрирован?"
     else:
-        message = f"{pet_name} стерилизована?"
+        message = f"Я уже поняла что {pet_name} — девочка. Она стерилизована?"
 
     return _make_response(
         message, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
@@ -392,9 +412,17 @@ def handle_onboarding(
         }
 
     result = route_state(state, message_text, pet_profile, user_flags)
+    next_state = OnboardingState(result["onboarding_step"])
+
+    # Пропускать состояния если данные уже известны
+    skip = set(user_flags.get("onboarding_skip", []))
+    while next_state.value in skip and next_state != OnboardingState.COMPLETE:
+        next_state = TRANSITIONS.get(next_state, OnboardingState.COMPLETE)
+
+    result["onboarding_step"] = next_state.value
+    result["next_question"] = next_state.value
 
     # Persist new state
-    next_state = OnboardingState(result["onboarding_step"])
     set_state(user_flags, next_state)
     update_user_flags(user_id, user_flags)
 
