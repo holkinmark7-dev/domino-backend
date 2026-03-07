@@ -1,5 +1,5 @@
 """
-Onboarding v4 — Chat-native FSM (15 states).
+Onboarding v4 — Chat-native FSM (14 states).
 Replaces onboarding.py + onboarding_router.py.
 """
 
@@ -11,21 +11,20 @@ from routers.services.memory import get_user_flags, update_user_flags
 # ── FSM States ────────────────────────────────────────────────────────────────
 
 class OnboardingState(str, Enum):
-    WELCOME         = "WELCOME"
-    OWNER_NAME      = "OWNER_NAME"
-    GOAL            = "GOAL"
-    FREE_TEXT_INTRO = "FREE_TEXT_INTRO"
-    PARSE_FREE_TEXT = "PARSE_FREE_TEXT"
-    CLARIFY_MISSING = "CLARIFY_MISSING"
-    PASSPORT_OFFER  = "PASSPORT_OFFER"
-    PASSPORT_OCR    = "PASSPORT_OCR"
-    VISION_BREED    = "VISION_BREED"
-    CHAT_FLOW       = "CHAT_FLOW"
-    BREED_INSIGHT   = "BREED_INSIGHT"
-    NEUTERED        = "NEUTERED"
-    PHOTO_AVATAR    = "PHOTO_AVATAR"
-    CONFIRM_SUMMARY = "CONFIRM_SUMMARY"
-    COMPLETE        = "COMPLETE"
+    WELCOME         = "WELCOME"            # Шаг 1 — первое сообщение бота
+    OWNER_NAME      = "OWNER_NAME"         # Шаг 1 — ждём имя владельца
+    GOAL            = "GOAL"               # Шаг 2 — зачем скачал приложение
+    PET_INTRO       = "PET_INTRO"          # Шаг 3 — свободный текст про питомца
+    SPECIES_CLARIFY = "SPECIES_CLARIFY"    # Шаг 4 — кот или собака (если не ясно)
+    PASSPORT_OFFER  = "PASSPORT_OFFER"     # Шаг 5 — предложение сфотографировать паспорт
+    PASSPORT_OCR    = "PASSPORT_OCR"       # Шаг 5 — ветка: пользователь выбрал паспорт
+    BREED           = "BREED"              # Шаг 6 — порода (фото или текст)
+    BREED_INSIGHT   = "BREED_INSIGHT"      # Шаг 6 — инсайт после ввода породы
+    AGE             = "AGE"                # Шаг 7 — возраст / дата рождения
+    GENDER_NEUTERED = "GENDER_NEUTERED"    # Шаг 8 — пол + кастрация/стерилизация
+    PHOTO_AVATAR    = "PHOTO_AVATAR"       # Шаг 9 — фото питомца для карточки
+    CONFIRM_SUMMARY = "CONFIRM_SUMMARY"    # Шаг 10 — финальная карточка питомца
+    COMPLETE        = "COMPLETE"           # Онбординг завершён
 
 
 # ── Transition table ──────────────────────────────────────────────────────────
@@ -33,16 +32,15 @@ class OnboardingState(str, Enum):
 TRANSITIONS = {
     OnboardingState.WELCOME:         OnboardingState.OWNER_NAME,
     OnboardingState.OWNER_NAME:      OnboardingState.GOAL,
-    OnboardingState.GOAL:            OnboardingState.FREE_TEXT_INTRO,
-    OnboardingState.FREE_TEXT_INTRO:  OnboardingState.PARSE_FREE_TEXT,
-    OnboardingState.PARSE_FREE_TEXT:  OnboardingState.CLARIFY_MISSING,
-    OnboardingState.CLARIFY_MISSING: OnboardingState.PASSPORT_OFFER,
-    OnboardingState.PASSPORT_OFFER:  OnboardingState.CHAT_FLOW,
-    OnboardingState.PASSPORT_OCR:    OnboardingState.CHAT_FLOW,
-    OnboardingState.VISION_BREED:    OnboardingState.BREED_INSIGHT,
-    OnboardingState.CHAT_FLOW:       OnboardingState.BREED_INSIGHT,
-    OnboardingState.BREED_INSIGHT:   OnboardingState.NEUTERED,
-    OnboardingState.NEUTERED:        OnboardingState.PHOTO_AVATAR,
+    OnboardingState.GOAL:            OnboardingState.PET_INTRO,
+    OnboardingState.PET_INTRO:       OnboardingState.SPECIES_CLARIFY,
+    OnboardingState.SPECIES_CLARIFY: OnboardingState.PASSPORT_OFFER,
+    OnboardingState.PASSPORT_OFFER:  OnboardingState.BREED,
+    OnboardingState.PASSPORT_OCR:    OnboardingState.BREED,
+    OnboardingState.BREED:           OnboardingState.BREED_INSIGHT,
+    OnboardingState.BREED_INSIGHT:   OnboardingState.AGE,
+    OnboardingState.AGE:             OnboardingState.GENDER_NEUTERED,
+    OnboardingState.GENDER_NEUTERED: OnboardingState.PHOTO_AVATAR,
     OnboardingState.PHOTO_AVATAR:    OnboardingState.CONFIRM_SUMMARY,
     OnboardingState.CONFIRM_SUMMARY: OnboardingState.COMPLETE,
 }
@@ -94,58 +92,28 @@ def _make_response(
 # ── State handlers (placeholders) ────────────────────────────────────────────
 
 def _handle_welcome(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[WELCOME] Плейсхолдер",
-        TRANSITIONS[OnboardingState.WELCOME],
-        user_flags, pet_profile,
-    )
+    return _make_response("[WELCOME]", OnboardingState.OWNER_NAME, user_flags, pet_profile)
 
 
 def _handle_owner_name(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[OWNER_NAME] Плейсхолдер",
-        TRANSITIONS[OnboardingState.OWNER_NAME],
-        user_flags, pet_profile,
-    )
+    return _make_response("[OWNER_NAME]", OnboardingState.GOAL, user_flags, pet_profile)
 
 
 def _handle_goal(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[GOAL] Плейсхолдер",
-        TRANSITIONS[OnboardingState.GOAL],
-        user_flags, pet_profile,
-    )
+    return _make_response("[GOAL]", OnboardingState.PET_INTRO, user_flags, pet_profile)
 
 
-def _handle_free_text_intro(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[FREE_TEXT_INTRO] Плейсхолдер",
-        TRANSITIONS[OnboardingState.FREE_TEXT_INTRO],
-        user_flags, pet_profile,
-    )
+def _handle_pet_intro(user_input, pet_profile, user_flags):
+    return _make_response("[PET_INTRO]", OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile)
 
 
-def _handle_parse_free_text(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[PARSE_FREE_TEXT] Плейсхолдер",
-        TRANSITIONS[OnboardingState.PARSE_FREE_TEXT],
-        user_flags, pet_profile,
-    )
-
-
-def _handle_clarify_missing(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[CLARIFY_MISSING] Плейсхолдер",
-        TRANSITIONS[OnboardingState.CLARIFY_MISSING],
-        user_flags, pet_profile,
-    )
+def _handle_species_clarify(user_input, pet_profile, user_flags):
+    return _make_response("[SPECIES_CLARIFY]", OnboardingState.PASSPORT_OFFER, user_flags, pet_profile)
 
 
 def _handle_passport_offer(user_input, pet_profile, user_flags):
     return _make_response(
-        "[PASSPORT_OFFER] Плейсхолдер",
-        TRANSITIONS[OnboardingState.PASSPORT_OFFER],
-        user_flags, pet_profile,
+        "[PASSPORT_OFFER]", OnboardingState.BREED, user_flags, pet_profile,
         quick_replies=["Сфотографировать паспорт", "Пропустить"],
         input_type="buttons",
     )
@@ -153,53 +121,30 @@ def _handle_passport_offer(user_input, pet_profile, user_flags):
 
 def _handle_passport_ocr(user_input, pet_profile, user_flags):
     return _make_response(
-        "[PASSPORT_OCR] Плейсхолдер",
-        TRANSITIONS[OnboardingState.PASSPORT_OCR],
-        user_flags, pet_profile,
+        "[PASSPORT_OCR]", OnboardingState.BREED, user_flags, pet_profile,
         input_type="photo",
     )
 
 
-def _handle_vision_breed(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[VISION_BREED] Плейсхолдер",
-        TRANSITIONS[OnboardingState.VISION_BREED],
-        user_flags, pet_profile,
-        input_type="photo",
-    )
-
-
-def _handle_chat_flow(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[CHAT_FLOW] Плейсхолдер",
-        TRANSITIONS[OnboardingState.CHAT_FLOW],
-        user_flags, pet_profile,
-    )
+def _handle_breed(user_input, pet_profile, user_flags):
+    return _make_response("[BREED]", OnboardingState.BREED_INSIGHT, user_flags, pet_profile)
 
 
 def _handle_breed_insight(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[BREED_INSIGHT] Плейсхолдер",
-        TRANSITIONS[OnboardingState.BREED_INSIGHT],
-        user_flags, pet_profile,
-    )
+    return _make_response("[BREED_INSIGHT]", OnboardingState.AGE, user_flags, pet_profile)
 
 
-def _handle_neutered(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[NEUTERED] Плейсхолдер",
-        TRANSITIONS[OnboardingState.NEUTERED],
-        user_flags, pet_profile,
-        quick_replies=["Да", "Нет"],
-        input_type="buttons",
-    )
+def _handle_age(user_input, pet_profile, user_flags):
+    return _make_response("[AGE]", OnboardingState.GENDER_NEUTERED, user_flags, pet_profile)
+
+
+def _handle_gender_neutered(user_input, pet_profile, user_flags):
+    return _make_response("[GENDER_NEUTERED]", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile)
 
 
 def _handle_photo_avatar(user_input, pet_profile, user_flags):
     return _make_response(
-        "[PHOTO_AVATAR] Плейсхолдер",
-        TRANSITIONS[OnboardingState.PHOTO_AVATAR],
-        user_flags, pet_profile,
+        "[PHOTO_AVATAR]", OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
         quick_replies=["Загрузить фото", "Пропустить"],
         input_type="buttons",
     )
@@ -207,20 +152,14 @@ def _handle_photo_avatar(user_input, pet_profile, user_flags):
 
 def _handle_confirm_summary(user_input, pet_profile, user_flags):
     return _make_response(
-        "[CONFIRM_SUMMARY] Плейсхолдер",
-        TRANSITIONS[OnboardingState.CONFIRM_SUMMARY],
-        user_flags, pet_profile,
+        "[CONFIRM_SUMMARY]", OnboardingState.COMPLETE, user_flags, pet_profile,
         quick_replies=["Всё верно", "Исправить"],
         input_type="buttons",
     )
 
 
 def _handle_complete(user_input, pet_profile, user_flags):
-    return _make_response(
-        "[COMPLETE] Онбординг завершён",
-        OnboardingState.COMPLETE,
-        user_flags, pet_profile,
-    )
+    return _make_response("[COMPLETE]", OnboardingState.COMPLETE, user_flags, pet_profile)
 
 
 # ── State router ──────────────────────────────────────────────────────────────
@@ -229,15 +168,14 @@ _HANDLERS = {
     OnboardingState.WELCOME:         _handle_welcome,
     OnboardingState.OWNER_NAME:      _handle_owner_name,
     OnboardingState.GOAL:            _handle_goal,
-    OnboardingState.FREE_TEXT_INTRO:  _handle_free_text_intro,
-    OnboardingState.PARSE_FREE_TEXT:  _handle_parse_free_text,
-    OnboardingState.CLARIFY_MISSING: _handle_clarify_missing,
+    OnboardingState.PET_INTRO:       _handle_pet_intro,
+    OnboardingState.SPECIES_CLARIFY: _handle_species_clarify,
     OnboardingState.PASSPORT_OFFER:  _handle_passport_offer,
     OnboardingState.PASSPORT_OCR:    _handle_passport_ocr,
-    OnboardingState.VISION_BREED:    _handle_vision_breed,
-    OnboardingState.CHAT_FLOW:       _handle_chat_flow,
+    OnboardingState.BREED:           _handle_breed,
     OnboardingState.BREED_INSIGHT:   _handle_breed_insight,
-    OnboardingState.NEUTERED:        _handle_neutered,
+    OnboardingState.AGE:             _handle_age,
+    OnboardingState.GENDER_NEUTERED: _handle_gender_neutered,
     OnboardingState.PHOTO_AVATAR:    _handle_photo_avatar,
     OnboardingState.CONFIRM_SUMMARY: _handle_confirm_summary,
     OnboardingState.COMPLETE:        _handle_complete,
