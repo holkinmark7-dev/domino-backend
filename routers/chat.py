@@ -258,6 +258,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     ensure_user_exists(message.user_id)
 
+    is_onboarding = not bool(message.pet_id)
+
     # 1. Сохраняем сообщение (skip empty — e.g. WELCOME request)
     chat_data_list = []
     if message.message and message.message.strip():
@@ -297,7 +299,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _respiratory_recalibrated = False
 
     # Pet profile — early fetch for species/age and vital rules
-    pet_profile = get_pet_profile(pet_id=message.pet_id)
+    pet_profile = get_pet_profile(pet_id=message.pet_id) if not is_onboarding else {}
     pet_profile = pet_profile or {}
     _species = (pet_profile.get("species") or "").lower() if pet_profile else ""
     _age_years = compute_age_years(pet_profile.get("birth_date") if pet_profile else None)
@@ -306,20 +308,23 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     red_flag = _detect_red_flags(message.message)
 
     # 3.55. Episode tracking
-    try:
-        _ep_valid = isinstance(structured_data, dict) and "error" not in structured_data
-        _ep_symptom = structured_data.get("symptom") if _ep_valid else None
-        _ep_medication = structured_data.get("medication") if _ep_valid else None
-        episode_result = process_event(
-            pet_id=message.pet_id,
-            symptom=_ep_symptom,
-            medication=_ep_medication,
-            message_text=message.message,
-        )
-        if episode_result.get("episode_id") and _ep_valid:
-            structured_data["episode_id"] = episode_result["episode_id"]
-    except Exception as e:
-        logger.error("[episode tracking] %s", e)
+    if not is_onboarding:
+        try:
+            _ep_valid = isinstance(structured_data, dict) and "error" not in structured_data
+            _ep_symptom = structured_data.get("symptom") if _ep_valid else None
+            _ep_medication = structured_data.get("medication") if _ep_valid else None
+            episode_result = process_event(
+                pet_id=message.pet_id,
+                symptom=_ep_symptom,
+                medication=_ep_medication,
+                message_text=message.message,
+            )
+            if episode_result.get("episode_id") and _ep_valid:
+                structured_data["episode_id"] = episode_result["episode_id"]
+        except Exception as e:
+            logger.error("[episode tracking] %s", e)
+            episode_result = {"episode_id": None, "action": "standalone"}
+    else:
         episode_result = {"episode_id": None, "action": "standalone"}
 
     # ── Onboarding ──
@@ -349,24 +354,27 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         pet_profile = _ob_result["pet_profile_updated"]
 
     # Prefetch medical events — used by both clinical_decision and postprocess
-    _all_medical_events = get_medical_events(pet_id=message.pet_id, limit=20)
+    _all_medical_events = get_medical_events(pet_id=message.pet_id, limit=20) if not is_onboarding else []
 
     # 3.6. Clinical decision + safety layers (GDV, vital signs, absolute critical)
-    decision = build_full_clinical_decision(
-        message_text=message.message,
-        pet_id=message.pet_id,
-        structured_data=structured_data,
-        pet_profile=pet_profile,
-        episode_result=episode_result,
-        red_flag=red_flag,
-        lethargy_level=_lethargy_level,
-        temperature_value=_temperature_value,
-        respiratory_rate=_respiratory_rate,
-        seizure_duration=_seizure_duration,
-        species=_species,
-        age_years=_age_years,
-        prev_events=_all_medical_events,
-    )
+    if not is_onboarding:
+        decision = build_full_clinical_decision(
+            message_text=message.message,
+            pet_id=message.pet_id,
+            structured_data=structured_data,
+            pet_profile=pet_profile,
+            episode_result=episode_result,
+            red_flag=red_flag,
+            lethargy_level=_lethargy_level,
+            temperature_value=_temperature_value,
+            respiratory_rate=_respiratory_rate,
+            seizure_duration=_seizure_duration,
+            species=_species,
+            age_years=_age_years,
+            prev_events=_all_medical_events,
+        )
+    else:
+        decision = None
 
     # Extract debug flags from clinical decision
     if decision is not None:
@@ -412,28 +420,29 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         }
 
     # Pre-fetch data needed by postprocess AND later stages
-    recent_events = get_recent_events(pet_id=message.pet_id, limit=10)
+    recent_events = get_recent_events(pet_id=message.pet_id, limit=10) if not is_onboarding else []
 
     previous_assistant_text = None
-    try:
-        _prev_ai = (
-            supabase.table("chat")
-            .select("message")
-            .eq("pet_id", message.pet_id)
-            .eq("role", "ai")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if _prev_ai.data:
-            previous_assistant_text = _prev_ai.data[0]["message"]
-    except Exception as _prev_err:
-        logger.error("[prev_assistant] %s", _prev_err)
+    if not is_onboarding:
+        try:
+            _prev_ai = (
+                supabase.table("chat")
+                .select("message")
+                .eq("pet_id", message.pet_id)
+                .eq("role", "ai")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if _prev_ai.data:
+                previous_assistant_text = _prev_ai.data[0]["message"]
+        except Exception as _prev_err:
+            logger.error("[prev_assistant] %s", _prev_err)
 
     _prev_summary = (previous_assistant_text or "")[:200] or None
 
     # ── Post-processing ──
-    if decision:
+    if decision and not is_onboarding:
         decision = postprocess_decision(
             decision=decision,
             structured_data=structured_data,
@@ -456,7 +465,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     # 4. Сохраняем medical_event ТОЛЬКО если есть symptom
     if (
-        isinstance(structured_data, dict)
+        not is_onboarding
+        and isinstance(structured_data, dict)
         and "error" not in structured_data
         and structured_data.get("symptom")
     ):
@@ -464,7 +474,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             user_id=message.user_id,
             pet_id=message.pet_id,
             structured_data=structured_data,
-            source_chat_id=chat_data.data[0]["id"] if chat_data.data else None,
+            source_chat_id=chat_data_list[0]["id"] if chat_data_list else None,
             episode_id=episode_result.get("episode_id"),
             escalation_level=decision.get("escalation", "LOW") if decision else "LOW",
         )
@@ -602,7 +612,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
                 ai_response = ai_response.replace("?", ".")
 
     # Persist AI response to chat table (linked to the user message)
-    _user_chat_id = chat_data.data[0]["id"] if chat_data.data else None
+    _user_chat_id = chat_data_list[0]["id"] if chat_data_list else None
     logger.debug("AI RESPONSE: %s", ai_response)
     logger.debug("LINKED ID: %s", _user_chat_id)
     try:
@@ -729,11 +739,12 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         }
 
     # Timeline recalculation
-    try:
-        from routers.timeline import recalculate_day
-        from datetime import date as _date_cls
-        recalculate_day(pet_id=str(message.pet_id), date_str=str(_date_cls.today()))
-    except Exception as _tl_err:
-        logger.error("[timeline recalc] %s", _tl_err)
+    if not is_onboarding:
+        try:
+            from routers.timeline import recalculate_day
+            from datetime import date as _date_cls
+            recalculate_day(pet_id=str(message.pet_id), date_str=str(_date_cls.today()))
+        except Exception as _tl_err:
+            logger.error("[timeline recalc] %s", _tl_err)
 
     return response_payload
