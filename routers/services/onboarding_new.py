@@ -165,10 +165,10 @@ def _handle_owner_name(user_input, pet_profile, user_flags):
     return _make_response(
         message, OnboardingState.GOAL, user_flags, pet_profile,
         quick_replies=[
-            "🐣 У меня новый питомец — хочу делать всё правильно",
-            "💊 Хочу следить за здоровьем и прививками",
-            "🏥 Есть конкретный вопрос по здоровью питомца",
-            "📋 Хочу вести полную медкарту",
+            "У меня новый питомец — хочу делать всё правильно",
+            "Хочу следить за здоровьем и прививками",
+            "Есть конкретный вопрос по здоровью питомца",
+            "Хочу вести полную медкарту",
         ],
         input_type="quick_reply",
     )
@@ -215,15 +215,13 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
 
 def _handle_species_clarify(user_input, pet_profile, user_flags):
     species_raw = user_input.strip().lower()
-    for prefix in ["🐱 ", "🐈 ", "🐩 "]:
-        species_raw = species_raw.replace(prefix, "")
     user_flags["species"] = species_raw
 
     pet_name = pet_profile.get("name", "ваш питомец")
     message = f"{pet_name} — это кот или кошка? Или собака?"
     return _make_response(
         message, OnboardingState.PASSPORT_OFFER, user_flags, pet_profile,
-        quick_replies=["🐱 Кот", "🐈 Кошка", "🐩 Собака"],
+        quick_replies=["Кот", "Кошка", "Собака"],
         input_type="quick_reply",
     )
 
@@ -236,7 +234,7 @@ def _handle_passport_offer(user_input, pet_profile, user_flags):
     )
     return _make_response(
         message, OnboardingState.BREED, user_flags, pet_profile,
-        quick_replies=["📸 Да, сфотографирую", "✍️ Нет, расскажу сам", "❓ Не знаю где он"],
+        quick_replies=["Сфотографировать паспорт", "Нет, расскажу сам", "Не знаю где он"],
         input_type="quick_reply",
     )
 
@@ -262,7 +260,7 @@ def _handle_breed(user_input, pet_profile, user_flags):
     )
     return _make_response(
         message, OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
-        quick_replies=["📸 Сделаю фото — определите", "✍️ Знаю, скажу сам", "🤷 Не знаю породу"],
+        quick_replies=["По фото", "Знаю, скажу сам", "Не знаю породу"],
         input_type="quick_reply",
     )
 
@@ -307,9 +305,9 @@ def _handle_age(user_input, pet_profile, user_flags):
 
 def _handle_gender(user_input, pet_profile, user_flags):
     raw = user_input.strip().lower()
-    if "мальчик" in raw:
+    if "самец" in raw or "мальчик" in raw:
         user_flags["gender"] = "самец"
-    elif "девочка" in raw:
+    elif "самка" in raw or "девочка" in raw:
         user_flags["gender"] = "самка"
     else:
         user_flags["gender"] = raw
@@ -318,7 +316,7 @@ def _handle_gender(user_input, pet_profile, user_flags):
     message = f"{pet_name} — мальчик или девочка?"
     return _make_response(
         message, OnboardingState.NEUTERED, user_flags, pet_profile,
-        quick_replies=["🐾 Мальчик", "🐾 Девочка"],
+        quick_replies=["Самец", "Самка"],
         input_type="quick_reply",
     )
 
@@ -334,7 +332,7 @@ def _handle_neutered(user_input, pet_profile, user_flags):
 
     return _make_response(
         message, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
-        quick_replies=["✅ Да", "❌ Нет", "❓ Не знаю"],
+        quick_replies=["Да", "Нет", "Не знаю"],
         input_type="quick_reply",
     )
 
@@ -347,7 +345,7 @@ def _handle_photo_avatar(user_input, pet_profile, user_flags):
     )
     return _make_response(
         message, OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
-        quick_replies=["📷 Загрузить", "Пропустить пока"],
+        quick_replies=["Загрузить фото", "Пропустить"],
         input_type="quick_reply",
     )
 
@@ -366,10 +364,10 @@ def _handle_confirm_summary(user_input, pet_profile, user_flags):
     return _make_response(
         message, OnboardingState.COMPLETE, user_flags, pet_profile,
         quick_replies=[
-            "💉 Когда нужны прививки?",
-            "🍽 Чем лучше кормить?",
-            "📋 Что ещё добавить в карточку?",
-            "🩺 Задать вопрос по здоровью",
+            "Когда нужны прививки?",
+            "Чем лучше кормить?",
+            "Что ещё добавить в карточку?",
+            "Задать вопрос по здоровью",
         ],
         input_type="quick_reply",
     )
