@@ -105,10 +105,38 @@ def _make_response(
         "chat_history": [],
         "pet_profile_updated": None,
         "pet_profile": pet_profile or {},
+        "pet_id": None,
     }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _create_pet_from_flags(user_id: str, user_flags: dict, supabase_client) -> str | None:
+    """
+    Создаёт запись в таблице pets из user_flags.
+    Возвращает pet_id или None при ошибке.
+    """
+    try:
+        pet_data = {
+            "user_id": user_id,
+            "name":       user_flags.get("pet_name"),
+            "species":    user_flags.get("species"),
+            "gender":     user_flags.get("gender"),
+            "neutered":   user_flags.get("neutered"),
+            "birth_date": user_flags.get("birth_date"),
+            "age_years":  user_flags.get("age_years"),
+            "breed":      user_flags.get("breed"),
+            "color":      user_flags.get("color"),
+        }
+        pet_data = {k: v for k, v in pet_data.items() if v is not None}
+
+        result = supabase_client.table("pets").insert(pet_data).execute()
+        if result.data:
+            return result.data[0]["id"]
+        return None
+    except Exception:
+        return None
+
 
 def _extract_owner_name(raw: str) -> str:
     return raw.strip().split()[0] if raw.strip() else raw.strip()
@@ -409,6 +437,7 @@ def handle_onboarding(
             "chat_history": [],
             "pet_profile_updated": None,
             "pet_profile": pet_profile,
+            "pet_id": None,
         }
 
     result = route_state(state, message_text, pet_profile, user_flags)
@@ -426,10 +455,17 @@ def handle_onboarding(
     set_state(user_flags, next_state)
     update_user_flags(user_id, user_flags)
 
-    # Mark onboarding complete in DB
+    # On COMPLETE: create pet + update user
     if next_state == OnboardingState.COMPLETE:
-        supabase_client.table("users").update(
-            {"is_onboarded": True}
-        ).eq("id", user_id).execute()
+        pet_id_created = _create_pet_from_flags(user_id, user_flags, supabase_client)
+
+        update_data = {"is_onboarded": True}
+        owner_name = user_flags.get("owner_name")
+        if owner_name:
+            update_data["owner_name"] = owner_name
+
+        supabase_client.table("users").update(update_data).eq("id", user_id).execute()
+
+        result["pet_id"] = pet_id_created
 
     return result
