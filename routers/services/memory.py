@@ -208,7 +208,10 @@ def get_onboarding_status(pet_id: str, user_id: str = None) -> dict:
         return {"complete": False, "next_question": "species", "phase": "required"}
 
     for field in REQUIRED_FIELDS:
-        skipped = profile.get(f"{field}_skipped", False)
+        if field == "age":
+            skipped = profile.get("birth_date_skipped", False)
+        else:
+            skipped = profile.get(f"{field}_skipped", False)
         if field == "neutered":
             has_value = profile.get("neutered") is not None
         elif field == "age":
