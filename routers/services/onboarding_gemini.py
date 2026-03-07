@@ -92,7 +92,7 @@ def get_states_to_skip(parsed: dict, user_flags: dict) -> set:
     if parsed.get("breed"):
         skip.add(OnboardingState.BREED)
 
-    if parsed.get("birth_date") or parsed.get("age_years") is not None:
+    if parsed.get("birth_date") or parsed.get("age_years") not in (None, ""):
         skip.add(OnboardingState.AGE)
 
     if parsed.get("gender"):
