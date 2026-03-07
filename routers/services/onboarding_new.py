@@ -258,8 +258,13 @@ def _handle_age(user_input, pet_profile, user_flags):
 
 
 def _handle_gender(user_input, pet_profile, user_flags):
-    gender = user_input.strip().lower()
-    user_flags["gender"] = gender
+    raw = user_input.strip().lower()
+    if "мальчик" in raw:
+        user_flags["gender"] = "самец"
+    elif "девочка" in raw:
+        user_flags["gender"] = "самка"
+    else:
+        user_flags["gender"] = raw
 
     pet_name = pet_profile.get("name", "ваш питомец")
     message = f"{pet_name} — мальчик или девочка?"
