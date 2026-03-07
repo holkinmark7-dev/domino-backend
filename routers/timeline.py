@@ -52,29 +52,29 @@ def get_timeline_month(pet_id: str, year: int = None, month: int = None, filter:
 
     active_episodes = (
         supabase.table("episodes")
-        .select("id, symptom_key, current_escalation, episode_phase, started_at, status")
+        .select("id, normalized_key, escalation_level, phase, started_at, status")
         .eq("pet_id", pet_id)
         .eq("status", "active")
-        .in_("current_escalation", ["MODERATE", "HIGH", "CRITICAL"])
+        .in_("escalation_level", ["MODERATE", "HIGH", "CRITICAL"])
         .order("started_at", desc=True)
         .limit(2)
         .execute()
     )
 
-    # Recurring patterns: symptom_key appearing ≥3 times in the month
+    # Recurring patterns: normalized_key appearing ≥3 times in the month
     month_episodes = (
         supabase.table("episodes")
-        .select("symptom_key")
+        .select("normalized_key")
         .eq("pet_id", pet_id)
         .gte("started_at", str(first_day))
         .lte("started_at", f"{last_day}T23:59:59")
         .execute()
     )
     symptom_counts = Counter(
-        ep.get("symptom_key") for ep in month_episodes.data if ep.get("symptom_key")
+        ep.get("normalized_key") for ep in month_episodes.data if ep.get("normalized_key")
     )
     recurring_patterns = [
-        {"symptom_key": k, "count": v} for k, v in symptom_counts.items() if v >= 3
+        {"normalized_key": k, "count": v} for k, v in symptom_counts.items() if v >= 3
     ]
 
     # Apply filter
@@ -143,7 +143,7 @@ def get_timeline_day(pet_id: str, date_str: str, request: Request = None, curren
         .select("*")
         .eq("pet_id", pet_id)
         .lte("started_at", f"{date_str}T23:59:59")
-        .or_(f"closed_at.is.null,closed_at.gte.{date_str}T00:00:00")
+        .or_(f"resolved_at.is.null,resolved_at.gte.{date_str}T00:00:00")
         .execute()
     )
 
@@ -304,13 +304,13 @@ def close_episode(pet_id: str, episode_id: str, request: Request = None, current
     now_iso = datetime.now(timezone.utc).isoformat()
 
     supabase.table("episodes").update({
-        "status": "closed",
-        "closed_at": now_iso,
+        "status": "resolved",
+        "resolved_at": now_iso,
     }).eq("id", episode_id).eq("pet_id", pet_id).execute()
 
     recalculate_day(pet_id=pet_id)
 
-    return {"status": "closed", "episode_id": episode_id, "closed_at": now_iso}
+    return {"status": "resolved", "episode_id": episode_id, "resolved_at": now_iso}
 
 
 # ── Add clinical action ─────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ test_ai_prompt_fix.py — AI.PY SYSTEM PROMPT FIX + OFF-TOPIC GUARD + FOOD CONTE
   T10 Regression: test_monotonic_lock.py all PASS
   T11 Regression: test_response_templates.py all PASS
 
-No OpenAI calls — client.chat.completions.create is patched to a dummy.
+No API calls — client.messages.create is patched to a dummy.
 """
 
 import sys
@@ -54,23 +54,19 @@ def _capture(pet_profile=None, clinical_decision=None, urgency_score=0):
     Call generate_ai_response with a patched OpenAI client.
     Returns (system_block_text, user_prompt_text, urgency_instructions_value).
 
-    We intercept the messages passed to client.chat.completions.create
+    We intercept the messages passed to client.messages.create
     to inspect system_block and user_prompt without real API calls.
     We also expose urgency_instructions by temporarily monkey-patching
     the function to record it.
     """
     captured = {}
 
-    fake_choice = MagicMock()
-    fake_choice.message.content = "stub"
-    fake_response = MagicMock()
-    fake_response.choices = [fake_choice]
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "stub"
 
-    def _fake_create(**kwargs):
-        captured["messages"] = kwargs["messages"]
-        return fake_response
-
-    with patch.object(ai_module.client.chat.completions, "create", side_effect=_fake_create):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         ai_module.generate_ai_response(AIResponseRequest(
             pet_profile=pet_profile or _DUMMY_PET,
             recent_events=[],
@@ -79,8 +75,8 @@ def _capture(pet_profile=None, clinical_decision=None, urgency_score=0):
             clinical_decision=clinical_decision,
         ))
 
-    system_block = captured["messages"][0]["content"]
-    user_prompt = captured["messages"][1]["content"]
+    system_block = captured["system"]
+    user_prompt = captured["user_prompt"]
     return system_block, user_prompt
 
 

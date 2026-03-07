@@ -31,7 +31,7 @@ def _mock_sb(rows: list) -> MagicMock:
 def _ep(
     ep_id: str,
     key: str = "vomiting",
-    escalation: str = "LOW",
+    escalation_level: str = "LOW",
     status: str = "active",
     started_at: str = "2026-02-20T10:00:00+00:00",
     resolved_at=None,
@@ -40,7 +40,7 @@ def _ep(
     return {
         "id": ep_id,
         "normalized_key": key,
-        "escalation": escalation,
+        "escalation_level": escalation_level,
         "status": status,
         "started_at": started_at,
         "resolved_at": resolved_at,
@@ -67,7 +67,7 @@ class TestVetReport(unittest.TestCase):
 
     # T2: One episode → first = last, all fields populated
     def test_one_episode(self):
-        rows = [_ep("ep-1", escalation="MODERATE", status="active",
+        rows = [_ep("ep-1", escalation_level="MODERATE", status="active",
                     started_at="2026-02-22T10:00:00+00:00")]
         with patch.object(vr, "supabase", _mock_sb(rows)):
             result = vr.get_vet_report("pet-1")
@@ -98,10 +98,10 @@ class TestVetReport(unittest.TestCase):
     # T4: highest_escalation_ever picks the true maximum
     def test_highest_escalation_ever(self):
         rows = [
-            _ep("ep-1", escalation="LOW",      started_at="2026-02-20T08:00:00+00:00"),
-            _ep("ep-2", escalation="MODERATE",  started_at="2026-02-21T08:00:00+00:00"),
-            _ep("ep-3", escalation="HIGH",      started_at="2026-02-22T08:00:00+00:00"),
-            _ep("ep-4", escalation="MODERATE",  started_at="2026-02-23T08:00:00+00:00"),
+            _ep("ep-1", escalation_level="LOW",      started_at="2026-02-20T08:00:00+00:00"),
+            _ep("ep-2", escalation_level="MODERATE",  started_at="2026-02-21T08:00:00+00:00"),
+            _ep("ep-3", escalation_level="HIGH",      started_at="2026-02-22T08:00:00+00:00"),
+            _ep("ep-4", escalation_level="MODERATE",  started_at="2026-02-23T08:00:00+00:00"),
         ]
         with patch.object(vr, "supabase", _mock_sb(rows)):
             result = vr.get_vet_report("pet-1")
@@ -109,9 +109,9 @@ class TestVetReport(unittest.TestCase):
 
     def test_highest_escalation_ever_critical(self):
         rows = [
-            _ep("ep-1", escalation="HIGH",     started_at="2026-02-20T08:00:00+00:00"),
-            _ep("ep-2", escalation="CRITICAL", started_at="2026-02-21T08:00:00+00:00"),
-            _ep("ep-3", escalation="LOW",      started_at="2026-02-22T08:00:00+00:00"),
+            _ep("ep-1", escalation_level="HIGH",     started_at="2026-02-20T08:00:00+00:00"),
+            _ep("ep-2", escalation_level="CRITICAL", started_at="2026-02-21T08:00:00+00:00"),
+            _ep("ep-3", escalation_level="LOW",      started_at="2026-02-22T08:00:00+00:00"),
         ]
         with patch.object(vr, "supabase", _mock_sb(rows)):
             result = vr.get_vet_report("pet-1")
@@ -154,12 +154,12 @@ class TestVetReport(unittest.TestCase):
     # T8: escalation values not mutated — passed through as-is
     def test_escalation_not_mutated(self):
         rows = [
-            _ep("ep-1", escalation="HIGH",     started_at="2026-02-20T08:00:00+00:00"),
-            _ep("ep-2", escalation="CRITICAL", started_at="2026-02-21T08:00:00+00:00"),
+            _ep("ep-1", escalation_level="HIGH",     started_at="2026-02-20T08:00:00+00:00"),
+            _ep("ep-2", escalation_level="CRITICAL", started_at="2026-02-21T08:00:00+00:00"),
         ]
         with patch.object(vr, "supabase", _mock_sb(rows)):
             result = vr.get_vet_report("pet-1")
-        by_id = {ep["episode_id"]: ep["escalation"] for ep in result["episodes"]}
+        by_id = {ep["episode_id"]: ep["escalation_level"] for ep in result["episodes"]}
         self.assertEqual(by_id["ep-1"], "HIGH")
         self.assertEqual(by_id["ep-2"], "CRITICAL")
         # highest_escalation_ever is read from the DB values, not recalculated
@@ -189,7 +189,7 @@ class TestVetReport(unittest.TestCase):
     # Extra: episode fields correct in report list
     def test_episode_fields_in_list(self):
         rows = [_ep(
-            "ep-x", key="diarrhea", escalation="MODERATE", status="resolved",
+            "ep-x", key="diarrhea", escalation_level="MODERATE", status="resolved",
             started_at="2026-02-20T08:00:00+00:00",
             resolved_at="2026-02-20T18:00:00+00:00",
         )]
@@ -198,7 +198,7 @@ class TestVetReport(unittest.TestCase):
         ep = result["episodes"][0]
         self.assertEqual(ep["episode_id"], "ep-x")
         self.assertEqual(ep["normalized_key"], "diarrhea")
-        self.assertEqual(ep["escalation"], "MODERATE")
+        self.assertEqual(ep["escalation_level"], "MODERATE")
         self.assertEqual(ep["status"], "resolved")
         self.assertEqual(ep["started_at"], "2026-02-20T08:00:00+00:00")
         self.assertEqual(ep["resolved_at"], "2026-02-20T18:00:00+00:00")

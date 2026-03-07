@@ -39,19 +39,15 @@ def _make_contract(
 
 
 def _call_generate(contract, extra_system_override=None):
-    """Call generate_ai_response with a mock OpenAI client; returns (system_prompt, user_prompt)."""
+    """Call generate_ai_response with a mock _call_llm; returns (system_prompt, user_prompt)."""
     captured = {}
 
-    def fake_create(**kwargs):
-        captured["messages"] = kwargs.get("messages", [])
-        mock_resp = MagicMock()
-        mock_resp.choices[0].message.content = "Тестовый ответ без вопросов."
-        return mock_resp
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "Тестовый ответ без вопросов."
 
-    mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = fake_create
-
-    with patch.object(ai_module, "client", mock_client):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         result = generate_ai_response(AIResponseRequest(
             pet_profile={"name": "Бони", "species": "dog", "breed": "beagle", "birth_date": "2020-01-01"},
             recent_events=[],
@@ -66,8 +62,8 @@ def _call_generate(contract, extra_system_override=None):
             llm_contract=contract,
         ))
 
-    system_msg = captured["messages"][0]["content"] if captured.get("messages") else ""
-    user_msg = captured["messages"][1]["content"] if len(captured.get("messages", [])) > 1 else ""
+    system_msg = captured.get("system", "")
+    user_msg = captured.get("user_prompt", "")
     return system_msg, user_msg, result
 
 
@@ -180,16 +176,12 @@ class TestContractBlockInjection(unittest.TestCase):
     def test_no_contract_no_block(self):
         captured = {}
 
-        def fake_create(**kwargs):
-            captured["messages"] = kwargs.get("messages", [])
-            mock_resp = MagicMock()
-            mock_resp.choices[0].message.content = "ok"
-            return mock_resp
+        def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+            captured["system"] = system_prompt
+            captured["user_prompt"] = user_prompt
+            return "ok"
 
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = fake_create
-
-        with patch.object(ai_module, "client", mock_client):
+        with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
             generate_ai_response(AIResponseRequest(
                 pet_profile={"name": "X", "species": "dog", "breed": "lab", "birth_date": "2020-01-01"},
                 recent_events=[],
@@ -197,7 +189,7 @@ class TestContractBlockInjection(unittest.TestCase):
                 llm_contract=None,
             ))
 
-        system_msg = captured["messages"][0]["content"]
+        system_msg = captured.get("system", "")
         self.assertNotIn("LLM CONTRACT", system_msg)
 
     # Known facts formatted as bullet list

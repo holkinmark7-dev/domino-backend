@@ -33,7 +33,7 @@ _SAMPLE_REPORT = {
         {
             "episode_id": "ep-1",
             "normalized_key": "vomiting",
-            "escalation": "LOW",
+            "escalation_level": "LOW",
             "status": "resolved",
             "started_at": "2026-02-01T08:00:00+00:00",
             "resolved_at": "2026-02-02T09:00:00+00:00",
@@ -41,7 +41,7 @@ _SAMPLE_REPORT = {
         {
             "episode_id": "ep-2",
             "normalized_key": "diarrhea",
-            "escalation": "HIGH",
+            "escalation_level": "HIGH",
             "status": "resolved",
             "started_at": "2026-02-15T08:00:00+00:00",
             "resolved_at": "2026-02-16T09:00:00+00:00",
@@ -49,7 +49,7 @@ _SAMPLE_REPORT = {
         {
             "episode_id": "ep-3",
             "normalized_key": "vomiting",
-            "escalation": "MODERATE",
+            "escalation_level": "MODERATE",
             "status": "active",
             "started_at": "2026-02-25T08:00:00+00:00",
             "resolved_at": None,

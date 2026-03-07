@@ -10,6 +10,7 @@ from routers.chat import router as chat_router
 from routers.timeline import router as timeline_router
 from routers.vet_report import router as vet_report_router
 from routers.chat_history import router as chat_history_router
+from routers.vision import router as vision_router
 
 from config import SUPABASE_URL, SUPABASE_KEY
 
@@ -23,6 +24,7 @@ app.include_router(chat_router)
 app.include_router(timeline_router, prefix="/api")
 app.include_router(vet_report_router)
 app.include_router(chat_history_router)
+app.include_router(vision_router)
 
 # CORS
 app.add_middleware(
@@ -32,7 +34,7 @@ app.add_middleware(
         "http://127.0.0.1:8081",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 

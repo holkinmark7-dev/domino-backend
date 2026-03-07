@@ -1,9 +1,10 @@
 """
-onboarding_router.py — Onboarding flow logic extracted from routers/chat.py.
-Handles owner name check, onboarding step detection, validation, transitions,
-deterministic response generation, and off-topic detection.
+onboarding_router.py — Onboarding flow logic v5.
+Two-stage onboarding, back intent, passport support, cat auto-gender.
 """
 
+from routers.services.ai import _call_llm
+from routers.services.model_router import get_model_for_response
 from routers.services.memory import (
     get_owner_name, save_owner_name,
     get_onboarding_status, update_pet_profile,
@@ -11,20 +12,53 @@ from routers.services.memory import (
 )
 from routers.services.onboarding import (
     get_onboarding_message, validate_onboarding_input, is_off_topic,
+    get_previous_step, OWNER_NAME_BLACKLIST, STAGE_2_STEPS,
 )
 
 
+def is_back_intent(message: str) -> bool:
+    """
+    Determine if user wants to go back / undo / correct input.
+    Uses AI classification — NOT a keyword list.
+    """
+    _msg = message.strip().lower()
+
+    # Quick keyword shortcut for obvious cases
+    if _msg in ("назад", "back", "отмена", "стоп", "вернись", "undo"):
+        return True
+
+    # Short messages that are likely just answers, not back-intent
+    if len(_msg) <= 3:
+        return False
+
+    try:
+        _config = get_model_for_response(mode="ONBOARDING")
+        result = _call_llm(
+            config=_config,
+            system_prompt=(
+                "Ты классификатор намерений. Определи: пользователь хочет вернуться "
+                "на предыдущий шаг / отменить / исправить ввод?\n"
+                "Ответь ТОЛЬКО 'yes' или 'no'.\n"
+                "Примеры yes: назад, нет подожди, ошибся, блин не то, упс, хочу изменить, "
+                "стоп, отмена, вернись, подожди, back, wait, mistake, wrong\n"
+                "Примеры no: любой ответ по существу вопроса"
+            ),
+            user_prompt=message,
+            max_tokens=8,
+        )
+        return result.strip().lower() == "yes"
+    except Exception:
+        return False
+
+
 def _field_to_step(field: str, pet_profile: dict) -> str:
-    """
-    Map field from get_onboarding_status() to onboarding.py step.
-    For fields with branching, returns the first step of the branch.
-    """
+    """Map field from get_onboarding_status() to onboarding.py step."""
     _map = {
         "species": "species",
         "name": "name",
         "gender": "gender",
         "neutered": "neutered",
-        "age": "age_choice",
+        "age": "birth_date",
         "breed": "breed",
         "color": "color",
         "features": "features",
@@ -55,6 +89,37 @@ def _error_result(step, phase, next_q, owner_name, msg="Не удалось со
     }
 
 
+def _get_next_stage2_step(pet_profile: dict) -> str | None:
+    """Find the next unfilled step in stage 2."""
+    for step in STAGE_2_STEPS:
+        field = step
+        if step == "birth_date":
+            if pet_profile.get("birth_date") or pet_profile.get("age_years") or pet_profile.get("birth_date_skipped"):
+                continue
+        elif step == "gender":
+            if pet_profile.get("gender"):
+                continue
+        elif step == "neutered":
+            if pet_profile.get("neutered") is not None or pet_profile.get("neutered_skipped"):
+                continue
+        elif step == "breed":
+            if pet_profile.get("breed") or pet_profile.get("breed_skipped"):
+                continue
+        elif step == "color":
+            if pet_profile.get("color") or pet_profile.get("color_skipped"):
+                continue
+        elif step == "features":
+            if pet_profile.get("features") or pet_profile.get("features_skipped"):
+                continue
+        elif step == "photo_avatar":
+            if pet_profile.get("avatar_url") or pet_profile.get("photo_avatar_skipped"):
+                continue
+        else:
+            continue
+        return step
+    return None
+
+
 def handle_onboarding(
     message_text: str,
     user_id: str,
@@ -79,43 +144,65 @@ def handle_onboarding(
     _pet_profile_updated = None
     _chat_history = []
 
-    # ── OWNER NAME CHECK (ДО онбординга питомца) ─────────────────────
-    if _message_mode != "REGISTRATION_PROMPT":
-        _owner_name = get_owner_name(user_id=user_id)
+    # ── OWNER NAME CHECK (BEFORE pet onboarding) ──────────────────
+    _owner_name = get_owner_name(user_id=user_id)
 
-        if not _owner_name and _message_mode != "CLINICAL":
-            # Проверяем есть ли предыдущие AI-сообщения (уже спрашивали имя?)
-            _prior_ai_check = supabase_client.table("chat").select("id").eq("user_id", user_id).eq("role", "ai").limit(1).execute()
-            _already_asked = bool(_prior_ai_check.data)
+    if not _owner_name and _message_mode != "CLINICAL":
+        # Check if we already asked (any AI message exists)
+        _prior_ai_check = supabase_client.table("chat").select("id").eq("user_id", user_id).eq("role", "ai").limit(1).execute()
+        _already_asked = bool(_prior_ai_check.data)
 
-            if _already_asked:
-                # Пробуем распознать имя из текущего сообщения
-                _raw = message_text.strip()
-                _name_blacklist = [
-                    "привет", "здравствуйте", "здравствуй", "добрый", "доброе",
-                    "добрый день", "добрый вечер", "доброе утро", "хай", "hello",
-                    "hi", "здрасте", "хеллоу", "ку", "йо", "даров", "дратути",
-                ]
-                if (
-                    len(_raw) >= 2
-                    and len(_raw) <= 40
-                    and _raw.replace(" ", "").replace("-", "").isalpha()
-                    and _raw.lower() not in _name_blacklist
-                ):
-                    save_owner_name(user_id=user_id, name=_raw.capitalize())
-                    _owner_name = _raw.capitalize()
-
-            if not _owner_name:
-                # Имя ещё не получено — спрашиваем
+        if _already_asked:
+            # Try to extract name from current message
+            _raw = message_text.strip()
+            _name_blacklist = [
+                "привет", "здравствуйте", "здравствуй", "добрый", "доброе",
+                "добрый день", "добрый вечер", "доброе утро", "хай", "hello",
+                "hi", "здрасте", "хеллоу", "ку", "йо", "даров", "дратути",
+            ]
+            if (
+                len(_raw) >= 2
+                and len(_raw) <= 40
+                and _raw.replace(" ", "").replace("-", "").isalpha()
+                and _raw.lower() not in _name_blacklist
+                and _raw.lower() not in OWNER_NAME_BLACKLIST
+            ):
+                save_owner_name(user_id=user_id, name=_raw.capitalize())
+                _owner_name = _raw.capitalize()
+            elif _raw.lower() in OWNER_NAME_BLACKLIST:
+                # User typed a blacklisted word instead of name
                 _message_mode = "ONBOARDING"
                 _next_question = "owner_name"
                 _onboarding_phase = "owner"
+                _onboarding_deterministic = True
+                _ai_response_override = "Напиши своё имя, например: Марк"
+                _quick_replies = []
+                _input_type = "text"
+                return {
+                    "message_mode": _message_mode,
+                    "next_question": _next_question,
+                    "owner_name": _owner_name,
+                    "onboarding_phase": _onboarding_phase,
+                    "onboarding_step": "owner_name",
+                    "auto_follow": None,
+                    "quick_replies": _quick_replies,
+                    "input_type": _input_type,
+                    "validation": None,
+                    "is_off_topic": False,
+                    "onboarding_deterministic": True,
+                    "ai_response_override": _ai_response_override,
+                    "pet_profile_updated": None,
+                    "chat_history": [],
+                }
 
-    # ── ONBOARDING override — только если нет симптома и профиль не заполнен
-    if _next_question != "owner_name" and _message_mode != "REGISTRATION_PROMPT":
-        # Проверяем сохранённый под-шаг (для ветвлений: age_date, chip_id_input, итд)
+        if not _owner_name:
+            _message_mode = "ONBOARDING"
+            _next_question = "owner_name"
+            _onboarding_phase = "owner"
+
+    # ── ONBOARDING override — only if no clinical symptom ─────────
+    if _next_question != "owner_name":
         _saved_step = pet_profile.get("onboarding_step") if pet_profile else None
-
         _onboarding = get_onboarding_status(pet_id=pet_id)
         _onboarding_phase = _onboarding.get("phase")
 
@@ -123,25 +210,29 @@ def handle_onboarding(
             _message_mode = "ONBOARDING"
             _next_question = _onboarding["next_question"]
 
-            # Определяем текущий шаг: сохранённый под-шаг или маппинг из поля
+            # Determine current step
             if _saved_step:
                 _onboarding_step = _saved_step
             else:
-                # Между required и optional — показать optional_gate
-                if _onboarding_phase == "optional" and _next_question in ["breed", "color", "features", "chip_id", "stamp_id"]:
-                    # Определяем программно: если saved_step на optional шаге → gate пройден
-                    _gate_passed = _saved_step in ["breed", "color", "features", "chip_id_ask", "chip_id_input", "stamp_id_ask", "stamp_id_input"]
+                # Exception #1: skip species if already set
+                if _next_question == "species" and pet_profile and pet_profile.get("species"):
+                    # Species already known, move to name
+                    _onboarding_step = "name"
+                    _next_question = "name"
+                # Between required and optional — show done_stage1 gate
+                elif _onboarding_phase == "optional" and _next_question in ["breed", "color", "features", "chip_id", "stamp_id"]:
+                    _gate_passed = _saved_step in STAGE_2_STEPS or (pet_profile or {}).get("optional_gate_passed")
                     if not _gate_passed:
-                        _onboarding_step = "optional_gate"
+                        _onboarding_step = "done_stage1"
                     else:
                         _onboarding_step = _field_to_step(_next_question, pet_profile or {})
                 else:
                     _onboarding_step = _field_to_step(_next_question, pet_profile or {})
 
-    # ── Обработка ответа онбординга (детерминированный движок) ──
+    # ── Process onboarding answer ─────────────────────────────────
     if _message_mode == "ONBOARDING" and _onboarding_step and _onboarding_step != "owner_name":
 
-        # Проверяем off-topic
+        # Check off-topic first
         _is_off_topic = is_off_topic(_onboarding_step, message_text)
 
         if _is_off_topic:
@@ -159,8 +250,41 @@ def handle_onboarding(
             except Exception as _hist_err:
                 print(f"[chat_history] {_hist_err}")
 
-        if not _is_off_topic:
-            # Валидируем ответ пользователя
+        elif not _is_off_topic:
+            # Check back intent BEFORE validation
+            if is_back_intent(message_text):
+                _prev_step = get_previous_step(_onboarding_step, pet_profile or {})
+                if _prev_step:
+                    _onboarding_step = _prev_step
+                    try:
+                        update_pet_profile(pet_id=pet_id, fields={"onboarding_step": _prev_step})
+                    except Exception:
+                        pass
+                    # Return the previous step's message
+                    _ob_msg = get_onboarding_message(_prev_step, pet_profile or {})
+                    _onboarding_deterministic = True
+                    _ai_response_override = _ob_msg["text"]
+                    _quick_replies = _ob_msg.get("quick_replies", [])
+                    _input_type = _ob_msg.get("input_type", "text")
+
+                    return {
+                        "message_mode": _message_mode,
+                        "next_question": _next_question,
+                        "owner_name": _owner_name,
+                        "onboarding_phase": _onboarding_phase,
+                        "onboarding_step": _prev_step,
+                        "auto_follow": None,
+                        "quick_replies": _quick_replies,
+                        "input_type": _input_type,
+                        "validation": None,
+                        "is_off_topic": False,
+                        "onboarding_deterministic": True,
+                        "ai_response_override": _ai_response_override,
+                        "pet_profile_updated": None,
+                        "chat_history": [],
+                    }
+
+            # Validate user's answer
             _validation = validate_onboarding_input(
                 step=_onboarding_step,
                 user_message=message_text,
@@ -168,7 +292,7 @@ def handle_onboarding(
             )
 
             if _validation["valid"]:
-                # Сохраняем распарсенные поля
+                # Save parsed fields
                 if _validation.get("field_updates"):
                     try:
                         update_pet_profile(pet_id=pet_id, fields=_validation["field_updates"])
@@ -178,31 +302,46 @@ def handle_onboarding(
                         print(f"[onboarding] update_pet_profile failed: {e}")
                         return _error_result(_onboarding_step, _onboarding_phase, _next_question, _owner_name)
 
-                # optional_gate: запоминаем что прошли
-                _next_step = _validation.get("next_step")
-                if _onboarding_step == "optional_gate" and _next_step and _next_step != "complete":
+                # Save pet_count to users table
+                if _onboarding_step == "pet_count" and _validation.get("field_updates", {}).get("pet_count"):
                     try:
-                        update_pet_profile(pet_id=pet_id, fields={"optional_gate_passed": True})
-                    except Exception as e:
-                        print(f"[onboarding] update_pet_profile optional_gate failed: {e}")
-                        return _error_result(_onboarding_step, _onboarding_phase, _next_question, _owner_name)
+                        supabase_client.table("users").update(
+                            {"pet_count": _validation["field_updates"]["pet_count"]}
+                        ).eq("id", user_id).execute()
+                    except Exception:
+                        pass
+
+                _next_step = _validation.get("next_step")
 
                 if _next_step == "complete":
-                    # Онбординг завершён
+                    # Onboarding complete
                     _message_mode = "ONBOARDING_COMPLETE"
                     _onboarding_step = None
                     _next_question = None
-                    # Очищаем onboarding_step в БД
                     try:
                         update_pet_profile(pet_id=pet_id, fields={"onboarding_step": None})
-                        update_user_flags(user_id=user_id, flags={"show_registration_prompt": True})
-                    except Exception as e:
-                        print(f"[onboarding] update_pet_profile complete failed: {e}")
+                    except Exception:
+                        pass
+
+                elif _next_step == "stage2":
+                    # Move to stage 2
+                    _next_s2 = _get_next_stage2_step(pet_profile or {})
+                    if _next_s2:
+                        _onboarding_step = _next_s2
+                        _next_question = _next_s2
+                        try:
+                            update_pet_profile(pet_id=pet_id, fields={"onboarding_step": _next_s2, "optional_gate_passed": True})
+                        except Exception:
+                            pass
+                    else:
+                        # All stage 2 fields already filled
+                        _message_mode = "ONBOARDING_COMPLETE"
+                        _onboarding_step = None
+                        _next_question = None
 
                 elif _next_step:
-                    # Явное ветвление (age_choice → age_date/age_approx, итд)
+                    # Explicit branching
                     _onboarding_step = _next_step
-                    # Сохраняем под-шаг в БД
                     try:
                         update_pet_profile(pet_id=pet_id, fields={"onboarding_step": _next_step})
                     except Exception as e:
@@ -210,99 +349,121 @@ def handle_onboarding(
                         return _error_result(_onboarding_step, _onboarding_phase, _next_question, _owner_name)
 
                 elif _onboarding_step == "name":
-                    # После имени → name_reaction + auto_follow gender
-                    _onboarding_step = "name_reaction"
-                    # НЕ сохраняем name_reaction как шаг — он транзитный
-                    # Следующий реальный шаг — gender
+                    # Exception #3: after name → name_reaction_and_gender for dogs, skip for cats
+                    _species = (pet_profile or {}).get("species", "")
+                    _gender = (pet_profile or {}).get("gender")
+
+                    if _species == "dog" or (_species != "cat" and not _gender):
+                        # Dog: combined reaction + gender question
+                        _onboarding_step = "name_reaction_and_gender"
+                        try:
+                            update_pet_profile(pet_id=pet_id, fields={"onboarding_step": "name_reaction_and_gender"})
+                        except Exception:
+                            pass
+                    else:
+                        # Cat: gender already set from species, go to passport_entry
+                        _onboarding_step = "passport_entry"
+                        try:
+                            update_pet_profile(pet_id=pet_id, fields={"onboarding_step": "passport_entry"})
+                        except Exception:
+                            pass
+
+                elif _onboarding_step == "name_reaction_and_gender":
+                    # Gender answered after name reaction → go to passport_entry
+                    _onboarding_step = "passport_entry"
                     try:
-                        update_pet_profile(pet_id=pet_id, fields={"onboarding_step": "gender"})
-                    except Exception as e:
-                        print(f"[onboarding] update_pet_profile name→gender failed: {e}")
-                        return _error_result(_onboarding_step, _onboarding_phase, _next_question, _owner_name)
+                        update_pet_profile(pet_id=pet_id, fields={"onboarding_step": "passport_entry"})
+                    except Exception:
+                        pass
+
+                elif _onboarding_step == "species":
+                    # Exception #2: if cat with auto-gender, skip to name
+                    _gender = (pet_profile or {}).get("gender")
+                    _onboarding_step = "name"
+                    try:
+                        update_pet_profile(pet_id=pet_id, fields={"onboarding_step": "name"})
+                    except Exception:
+                        pass
+
+                elif _onboarding_step == "pet_count":
+                    # After pet_count → species (or skip if already set)
+                    _species = (pet_profile or {}).get("species")
+                    if _species:
+                        _onboarding_step = "name"
+                    else:
+                        _onboarding_step = "species"
+                    try:
+                        update_pet_profile(pet_id=pet_id, fields={"onboarding_step": _onboarding_step})
+                    except Exception:
+                        pass
 
                 else:
-                    # Стандартный переход: перепроверяем статус
-                    # Очищаем сохранённый под-шаг
+                    # Standard transition: recheck status
                     try:
                         update_pet_profile(pet_id=pet_id, fields={"onboarding_step": None})
-                    except Exception as e:
-                        print(f"[onboarding] update_pet_profile clear step failed: {e}")
-                        return _error_result(_onboarding_step, _onboarding_phase, _next_question, _owner_name)
-                    _onboarding_recheck = get_onboarding_status(pet_id=pet_id)
-                    _onboarding_phase = _onboarding_recheck.get("phase")
+                    except Exception:
+                        pass
 
-                    if _onboarding_recheck["complete"]:
-                        _message_mode = "ONBOARDING_COMPLETE"
-                        _onboarding_step = None
-                        _next_question = None
-                        update_user_flags(user_id=user_id, flags={"show_registration_prompt": True})
+                    # In stage 2: find next unfilled step
+                    if _onboarding_step in STAGE_2_STEPS:
+                        _next_s2 = _get_next_stage2_step(pet_profile or {})
+                        if _next_s2:
+                            _onboarding_step = _next_s2
+                            _next_question = _next_s2
+                            try:
+                                update_pet_profile(pet_id=pet_id, fields={"onboarding_step": _next_s2})
+                            except Exception:
+                                pass
+                        else:
+                            _message_mode = "ONBOARDING_COMPLETE"
+                            _onboarding_step = None
+                            _next_question = None
                     else:
-                        _next_field = _onboarding_recheck["next_question"]
-                        # Проверяем optional_gate
-                        if _onboarding_recheck["phase"] == "optional":
-                            _saved_step_recheck = (pet_profile or {}).get("onboarding_step")
-                            _gate_passed_recheck = _saved_step_recheck in [
-                                "breed", "color", "features",
-                                "chip_id_ask", "chip_id_input", "stamp_id_ask", "stamp_id_input",
-                            ]
-                            if not _gate_passed_recheck and not (pet_profile or {}).get("optional_gate_passed"):
-                                _onboarding_step = "optional_gate"
+                        _onboarding_recheck = get_onboarding_status(pet_id=pet_id)
+                        _onboarding_phase = _onboarding_recheck.get("phase")
+
+                        if _onboarding_recheck["complete"]:
+                            _message_mode = "ONBOARDING_COMPLETE"
+                            _onboarding_step = None
+                            _next_question = None
+                        else:
+                            _next_field = _onboarding_recheck["next_question"]
+                            if _onboarding_recheck["phase"] == "optional":
+                                _gate_passed = (pet_profile or {}).get("optional_gate_passed")
+                                if not _gate_passed:
+                                    _onboarding_step = "done_stage1"
+                                else:
+                                    _onboarding_step = _field_to_step(_next_field, pet_profile or {})
                             else:
                                 _onboarding_step = _field_to_step(_next_field, pet_profile or {})
-                        else:
-                            _onboarding_step = _field_to_step(_next_field, pet_profile or {})
-                        _next_question = _next_field
+                            _next_question = _next_field
 
-            else:
-                # Невалидный ввод — остаёмся на том же шаге, показываем ошибку
-                # _onboarding_step не меняется
-                pass
+    print(f"[ONBOARDING DEBUG] mode={_message_mode} step={_onboarding_step} next_q={_next_question} off_topic={_is_off_topic}")
 
-    print(f"[ONBOARDING DEBUG] mode={_message_mode} step={_onboarding_step} next_q={_next_question} off_topic={_is_off_topic} deterministic={_onboarding_deterministic}")
-
-    # ── Детерминированный ответ онбординга ──
+    # ── Deterministic response generation ─────────────────────────
     _onboarding_deterministic = False
 
     if _message_mode == "ONBOARDING" and _onboarding_step and _onboarding_step != "owner_name" and not _is_off_topic:
         _onboarding_deterministic = True
 
-        # Проверяем: была ли ошибка валидации?
         if _validation is not None and not _validation.get("valid", True):
-            # Ошибка — показываем error_message
+            # Validation error
             _ai_response_override = _validation.get("error_message", "Не совсем понял. Попробуй ещё раз.")
             _ob_msg = get_onboarding_message(_onboarding_step, pet_profile or {})
             _quick_replies = _ob_msg.get("quick_replies", [])
             _input_type = _ob_msg.get("input_type", "text")
 
         elif _message_mode == "ONBOARDING_COMPLETE":
-            # Завершение — пойдёт через LLM (ONBOARDING_COMPLETE mode)
             _onboarding_deterministic = False
 
-        elif _onboarding_step == "name_reaction":
-            # name_reaction + auto_follow gender
-            _ob_reaction = get_onboarding_message("name_reaction", pet_profile or {})
-            _ai_response_override = _ob_reaction["text"]
-            _quick_replies = []
-            _input_type = "none"
-
-            # auto_follow — gender вопрос через 1 сек
-            _ob_gender = get_onboarding_message("gender", pet_profile or {})
-            _auto_follow = {
-                "text": _ob_gender["text"],
-                "quick_replies": _ob_gender.get("quick_replies", []),
-                "input_type": _ob_gender.get("input_type", "buttons"),
-                "delay_ms": 1000,
-                "onboarding_field": "gender",
-            }
-
         else:
-            # Стандартный шаг — детерминированная строка
+            # Standard step — deterministic message
             _ob_msg = get_onboarding_message(_onboarding_step, pet_profile or {})
             _ai_response_override = _ob_msg["text"]
             _quick_replies = _ob_msg.get("quick_replies", [])
             _input_type = _ob_msg.get("input_type", "text")
 
-    # После off-topic: добавляем quick_replies текущего шага чтобы фронт показал кнопки
+    # After off-topic: add quick_replies for current step
     if _is_off_topic and _onboarding_step:
         _ob_current = get_onboarding_message(_onboarding_step, pet_profile or {})
         _quick_replies = _ob_current.get("quick_replies", [])

@@ -1,10 +1,52 @@
-from openai import OpenAI
-from config import OPENAI_API_KEY
+import os
+import anthropic
+import google.generativeai as genai
 from routers.services.response_templates import select_template, get_phase_prefix
+from routers.services.model_router import get_model_for_response, get_model_for_extraction, ModelConfig
 from dataclasses import dataclass
 from typing import Optional
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+
+def _call_llm(config: ModelConfig, system_prompt: str, user_prompt: str, max_tokens: int = 600) -> str:
+    """
+    Единая точка вызова LLM. Абстрагирует провайдера.
+    Возвращает текст ответа.
+    """
+    if config.provider == "openai":
+        from openai import OpenAI
+        client = OpenAI(api_key=os.getenv(config.api_key_env))
+        response = client.chat.completions.create(
+            model=config.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.4,
+        )
+        return response.choices[0].message.content or ""
+
+    elif config.provider == "anthropic":
+        client = anthropic.Anthropic(api_key=os.getenv(config.api_key_env))
+        response = client.messages.create(
+            model=config.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        return response.content[0].text if response.content else ""
+
+    elif config.provider == "google":
+        genai.configure(api_key=os.getenv(config.api_key_env))
+        model = genai.GenerativeModel(
+            model_name=config.model,
+            system_instruction=system_prompt,
+        )
+        response = model.generate_content(user_prompt)
+        return response.text or ""
+
+    else:
+        raise ValueError(f"Unknown provider: {config.provider}")
 
 
 @dataclass
@@ -314,46 +356,20 @@ STRICT RULES:
             f"Предыдущий ответ (первые 300 символов): {(req.previous_assistant_text or '')[:300]}\n"
         )
 
-    if req.message_mode == "REGISTRATION_PROMPT":
-        _pet_name_reg = req.pet_profile.get("name") if req.pet_profile else "питомец"
-        _owner_reg = req.owner_name or ""
-        _address_reg = f"{_owner_reg}, " if _owner_reg else ""
-
-        system_block = (
-            f"Ты — Dominik.\n"
-            f"Пользователь только что создал профиль питомца {_pet_name_reg}.\n"
-            f"Твоя задача: предложить зарегистрироваться, чтобы сохранить данные.\n"
-            f"\n"
-            f"МОТИВАЦИЯ (используй один из этих аргументов):\n"
-            f"- 'Профиль {_pet_name_reg} хранится только на этом устройстве. "
-            f"Зарегистрируйся — и он сохранится навсегда, даже если сменишь телефон.'\n"
-            f"- 'Регистрация займёт 10 секунд. Потом доступ с любого устройства.'\n"
-            f"- 'Если потеряешь телефон — все данные {_pet_name_reg} останутся у тебя.'\n"
-            f"\n"
-            f"Обратись по имени: {_address_reg}\n"
-            f"Формат: 1-2 предложения мотивации + призыв к действию.\n"
-            f"НЕ давай медицинских советов.\n"
-            f"Тон: тёплый, не навязчивый, честный.\n"
-            f"Максимум 3 предложения.\n"
-            f"Отвечай только на русском языке.\n"
-        )
-        user_prompt = f"Сообщение пользователя: {req.user_message}"
-
-    elif req.message_mode == "ONBOARDING_COMPLETE":
+    if req.message_mode == "ONBOARDING_COMPLETE":
         _pet_name_done = req.pet_profile.get("name") if req.pet_profile else "питомец"
         _owner = req.owner_name or ""
-        _address_done = f"{_owner}! " if _owner else ""
+        _address_done = _owner if _owner else ""
 
         system_block = (
             f"Ты — Dominik.\n"
-            f"Онбординг завершён. Профиль {_pet_name_done} только что создан.\n"
-            f"Твоя задача: написать тёплое короткое сообщение о том что профиль готов.\n"
-            f"Обратись к пользователю по имени: {_address_done}\n"
-            f"Скажи что карточка {_pet_name_done} появилась в разделе Профиль.\n"
-            f"НЕ предлагай регистрацию — это сделает система отдельно.\n"
-            f"Максимум 2-3 предложения. Тепло. На ты.\n"
-            f"Никогда не начинай с 'Я понимаю' или 'Конечно'.\n"
-            f"Отвечай только на русском языке.\n"
+            f"Онбординг завершён. Профиль {_pet_name_done} создан полностью.\n"
+            f"Напиши тёплое финальное сообщение — максимум 3 предложения:\n"
+            f"1. Обратись к владельцу по имени: '{_address_done}'\n"
+            f"2. Скажи что профиль {_pet_name_done} готов и карточка в разделе Профиль.\n"
+            f"3. Скажи что теперь можно спрашивать о здоровье {_pet_name_done} в любое время.\n"
+            f"Тон: тёплый, на ты. Никогда не начинай с 'Я' или 'Конечно'.\n"
+            f"Только русский язык.\n"
         )
         user_prompt = f"Сообщение пользователя: {req.user_message}"
 
@@ -369,10 +385,12 @@ STRICT RULES:
         _current_step_label = ""
         if req.strict_override:
             _step_labels = {
+                "pet_count": "спросить сколько питомцев",
                 "species": "спросить кошка или собака",
                 "name": "спросить кличку питомца",
                 "gender": "спросить пол питомца",
                 "neutered": "спросить про кастрацию/стерилизацию",
+                "birth_date": "спросить дату рождения",
                 "age_choice": "спросить возраст",
                 "age_date": "попросить дату рождения",
                 "age_approx": "спросить примерный возраст",
@@ -381,6 +399,10 @@ STRICT RULES:
                 "features": "спросить про особые приметы",
                 "chip_id_ask": "спросить про микрочип",
                 "stamp_id_ask": "спросить про клеймо",
+                "passport_entry": "спросить про ветеринарный паспорт",
+                "passport_ocr": "попросить фото паспорта",
+                "photo_avatar": "предложить добавить фото питомца",
+                "done_stage1": "предложить заполнить больше информации",
             }
             _current_step_label = _step_labels.get(req.strict_override, "продолжить заполнение профиля")
 
@@ -429,26 +451,15 @@ STRICT RULES:
 
         # ШАГ 0 — имя владельца (особый случай)
         if req.strict_override == "owner_name":
-            _welcome_block = (
-                "Это ПЕРВОЕ сообщение пользователя в приложении.\n"
-                "Начни с тёплого приветствия (учитывай время суток).\n"
-                "Представься: 'Я Dominik — твой помощник по здоровью питомца.'\n"
-                "Кратко (1 предложение) что умеешь: симптомы, напоминания, экстренная помощь.\n"
-                "Затем задай вопрос: как тебя зовут?\n"
-                "Всё вместе — 3-4 предложения максимум.\n"
-            )
             system_block = (
-                f"Ты — Dominik, тёплый помощник для владельцев питомцев.\n"
+                f"Ты — Dominik, AI-ассистент здоровья питомцев от Domino Pets. "
+                f"Это первое сообщение онбординга. "
+                f"Напиши тёплое приветствие — максимум 3 предложения. "
+                f"Объясни что ты делаешь: помогаешь следить за здоровьем питомца. "
+                f"Задай один вопрос: как тебя зовут? "
+                f"Тон: дружелюбный, на ты. Никогда не начинай с 'Я' или 'Конечно'. Только русский язык.\n"
                 f"Текущее время: {req.client_time or 'неизвестно'}.\n"
                 f"Учитывай время суток: 6-12 'Доброе утро', 12-18 'Добрый день', 18-23 'Добрый вечер'.\n"
-                f"\n"
-                f"СТРОГИЕ ПРАВИЛА:\n"
-                f"1. Задай ровно один вопрос — как зовут пользователя.\n"
-                f"2. Максимум 3-4 предложения.\n"
-                f"3. Отвечай только на русском языке.\n"
-                f"4. Никогда не начинай с 'Я понимаю' или 'Конечно'.\n"
-                f"\n"
-                f"{_welcome_block}"
             )
             user_prompt = f"Сообщение пользователя: {req.user_message}"
         else:
@@ -461,22 +472,89 @@ STRICT RULES:
                 _owner_name_hint = req.owner_name
 
             # Обращение к владельцу по имени если известно
-            _address = f"{_owner_name_hint}, " if _owner_name_hint else ""
+            _address = f"{_owner_name_hint}" if _owner_name_hint else ""
 
             _onboarding_questions = {
-                # ОБЯЗАТЕЛЬНЫЕ
-                "species": f"Спроси кошка или собака. Одно предложение. Обратись по имени: '{_address}'.",
-                "name": f"Спроси как зовут питомца. Одно предложение. Обратись: '{_address}'.",
-                "name_reaction": f"Коротко отреагируй на кличку {_pet_name_hint}. 2-4 слова без смайлов. Примеры: 'Красивое имя', 'Редкая кличка', 'Хорошо звучит'. Никаких вопросов. Никаких оценок хозяина.",
-                "gender": f"Спроси пол {_pet_name_hint}. Используй кличку. Одно предложение.",
-                "neutered": f"Спроси кастрирован ли {_pet_name_hint} — используй правильную форму по полу. Одно предложение.",
-                "age": f"Спроси сколько лет {_pet_name_hint} или когда родился. Одно предложение.",
-                # НЕОБЯЗАТЕЛЬНЫЕ
-                "breed": f"Спроси породу {_pet_name_hint}. Скажи что можно написать 'не знаю' и пропустить. Одно предложение.",
-                "color": f"Спроси окрас {_pet_name_hint}. Можно пропустить. Одно предложение.",
-                "features": f"Спроси есть ли особые приметы у {_pet_name_hint} — пятна, шрамы, необычный окрас. Можно пропустить. Одно предложение.",
-                "chip_id": f"Спроси есть ли у {_pet_name_hint} микрочип и если да — его номер. Можно пропустить. Одно предложение.",
-                "stamp_id": f"Спроси есть ли у {_pet_name_hint} клеймо и если да — его номер. Можно пропустить. Одно предложение.",
+                # ЭТАП 1 — ОБЯЗАТЕЛЬНЫЙ МИНИМУМ
+                "pet_count": (
+                    f"Спроси сколько у {_address} питомцев. "
+                    f"Один вопрос, одно предложение."
+                ),
+                "species": (
+                    "Спроси кто у пользователя — собака или кот. Одно предложение."
+                ),
+                "name": (
+                    "Спроси как зовут питомца одним вопросом: 'Как зовут твоего питомца?'"
+                ),
+                "name_reaction_and_gender": (
+                    f"Пользователь написал кличку питомца: {_pet_name_hint}.\n"
+                    f"Напиши одно сообщение из двух частей:\n"
+                    f"1. Одна тёплая фраза-реакция на кличку (2–5 слов). Пример: '{_pet_name_hint} — отличное имя!'\n"
+                    f"2. Сразу задай вопрос: '{_pet_name_hint} — мальчик или девочка?'\n"
+                    f"Только для собак. Для котов и кошек этот промпт не вызывается.\n"
+                    f"Всё вместе — максимум 2 предложения. Без смайлов. Тон тёплый, на ты.\n"
+                    f"Никогда не начинай с 'Я' или 'Конечно'.\n"
+                ),
+                "name_reaction": (
+                    f"Коротко отреагируй на кличку {_pet_name_hint}. 2-4 слова без смайлов. "
+                    f"Примеры: 'Красивое имя', 'Редкая кличка', 'Хорошо звучит'. "
+                    f"Никаких вопросов. Никаких оценок хозяина."
+                ),
+                "passport_entry": (
+                    f"Спроси есть ли рядом ветеринарный паспорт. "
+                    f"Скажи что если сфотографировать — ты сам вытащишь породу, дату рождения и прививки. "
+                    f"Максимум 2 предложения. Тон тёплый, на ты."
+                ),
+                "done_stage1": (
+                    f"Базовый профиль {_pet_name_hint} создан.\n"
+                    f"Напиши тёплое сообщение: скажи что профиль готов.\n"
+                    f"Потом предложи заполнить больше информации — объясни что это поможет давать "
+                    f"точные советы по питанию, следить за здоровьем и предупреждать о рисках.\n"
+                    f"Спроси: заполним сейчас?\n"
+                    f"Максимум 3 предложения. Тон тёплый, на ты."
+                ),
+                # ЭТАП 2 — ДОПОЛНИТЕЛЬНЫЙ
+                "gender": (
+                    f"Спроси пол {_pet_name_hint} одним предложением: "
+                    f"'{_pet_name_hint} — мальчик или девочка?'"
+                ),
+                "neutered": (
+                    f"Спроси кастрирован/стерилизован ли {_pet_name_hint}. "
+                    f"Если пол мужской — спроси: '{_pet_name_hint} кастрирован?' "
+                    f"Если женский — спроси: '{_pet_name_hint} стерилизована?' "
+                    f"Одно предложение."
+                ),
+                "birth_date": (
+                    f"Спроси дату рождения {_pet_name_hint}. "
+                    f"Скажи что если не знает точно — можно выбрать год примерно. "
+                    f"Одно предложение."
+                ),
+                "age": (
+                    f"Спроси сколько лет {_pet_name_hint} или когда родился. Одно предложение."
+                ),
+                "breed": (
+                    f"Спроси породу {_pet_name_hint} одним предложением. "
+                    f"Скажи что если не знает — можно написать примерно или сфотографировать."
+                ),
+                "color": (
+                    f"Спроси окрас {_pet_name_hint} одним предложением. "
+                    f"Пример: 'Какого окраса {_pet_name_hint}? Например: рыжий, чёрно-белый, серый.'"
+                ),
+                "features": (
+                    f"Спроси есть ли особые приметы у {_pet_name_hint} — шрам, пятно, родинка. "
+                    f"Скажи что можно пропустить. Одно предложение."
+                ),
+                "photo_avatar": (
+                    f"Предложи добавить фото {_pet_name_hint} для карточки и хедера приложения. "
+                    f"Скажи что оно пригодится если питомец потеряется. "
+                    f"Скажи что можно пропустить. Одно-два предложения."
+                ),
+                "chip_id": (
+                    f"Спроси есть ли у {_pet_name_hint} микрочип и если да — его номер. Можно пропустить. Одно предложение."
+                ),
+                "stamp_id": (
+                    f"Спроси есть ли у {_pet_name_hint} клеймо и если да — его номер. Можно пропустить. Одно предложение."
+                ),
             }
 
             _question_instruction = _onboarding_questions.get(
@@ -496,6 +574,7 @@ STRICT RULES:
                 f"5. Если пользователь дал ответ на текущий вопрос — подтверди и ОСТАНОВИСЬ. Не задавай следующий вопрос.\n"
                 f"6. Отвечай только на русском языке.\n"
                 f"7. Максимум 2-3 предложения.\n"
+                f"8. Никогда не начинай с 'Я' или 'Конечно'.\n"
                 f"\n"
                 f"ТЕКУЩИЙ ВОПРОС (задай ТОЛЬКО его):\n"
                 f"{_question_instruction}\n"
@@ -655,16 +734,24 @@ User message:
 
         user_prompt = f"{deterministic_prompt}\n{context_block}\n"
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_block},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.4
+    # Извлекаем escalation из clinical_decision
+    _escalation = None
+    if req.clinical_decision and isinstance(req.clinical_decision, dict):
+        _escalation = req.clinical_decision.get("escalation")
+
+    # Определяем модель через роутер
+    model_config = get_model_for_response(
+        mode=req.message_mode,
+        escalation_level=_escalation,
+        has_image=getattr(req, 'has_image', False),
     )
 
-    return response.choices[0].message.content
+    return _call_llm(
+        config=model_config,
+        system_prompt=system_block,
+        user_prompt=user_prompt,
+        max_tokens=2048,
+    )
 
 
 def extract_event_data(user_message: str):
@@ -704,10 +791,7 @@ User message:
 {user_message}
 """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": (
+    _extraction_system = (
                 "You are a veterinary triage extraction engine.\n"
                 "Your ONLY job: extract structured medical data from owner messages.\n"
                 "Return ONLY valid JSON. No explanations. No markdown. No code blocks.\n\n"
@@ -803,10 +887,13 @@ User message:
                 '- PROFILE: вопрос про данные питомца ("сколько весит?")\n\n'
                 "is_ingestion = true если что-то проглочено.\n"
                 "ingested_substance = название того что проглочено."
-            )},
-            {"role": "user", "content": extraction_prompt}
-        ],
-        temperature=0
     )
 
-    return response.choices[0].message.content
+    extraction_config = get_model_for_extraction()
+
+    return _call_llm(
+        config=extraction_config,
+        system_prompt=_extraction_system,
+        user_prompt=extraction_prompt,
+        max_tokens=1024,
+    )

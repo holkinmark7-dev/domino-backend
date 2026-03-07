@@ -25,7 +25,7 @@ from routers.services.risk_engine import ESCALATION_ORDER
 router = APIRouter()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-_EPISODE_FIELDS = "id, normalized_key, escalation, status, started_at, resolved_at, updated_at"
+_EPISODE_FIELDS = "id, normalized_key, escalation_level, status, started_at, resolved_at, updated_at"
 
 
 @router.get("/vet-report/{pet_id}")
@@ -71,7 +71,7 @@ def get_vet_report(pet_id: str, request: Request = None, current_user: dict = De
     # highest escalation ever seen (read-only aggregation, no mutation)
     if episodes:
         highest_escalation_ever = max(
-            (ep.get("escalation") or "LOW" for ep in episodes),
+            (ep.get("escalation_level") or "LOW" for ep in episodes),
             key=lambda e: ESCALATION_ORDER.get(e, 0),
         )
     else:
@@ -82,7 +82,7 @@ def get_vet_report(pet_id: str, request: Request = None, current_user: dict = De
         {
             "episode_id": ep.get("id"),
             "normalized_key": ep.get("normalized_key"),
-            "escalation": ep.get("escalation"),
+            "escalation_level": ep.get("escalation_level"),
             "status": ep.get("status"),
             "started_at": ep.get("started_at"),
             "resolved_at": ep.get("resolved_at"),
@@ -201,7 +201,7 @@ def _build_pdf(report: dict, _compress: bool = True) -> bytes:
     for ep in report.get("episodes", []):
         started = (ep.get("started_at") or "")[:10]
         key = (ep.get("normalized_key") or "\u2014")[:22]
-        esc = ep.get("escalation") or "\u2014"
+        esc = ep.get("escalation_level") or "\u2014"
         status = ep.get("status") or "\u2014"
         for text, x in zip([started, key, esc, status], col_x):
             c.drawString(x, y, text)

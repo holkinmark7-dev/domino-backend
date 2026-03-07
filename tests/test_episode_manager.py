@@ -89,7 +89,7 @@ class TestProcessEventCreate:
     def test_existing_episode_continues(self):
         """Second vomiting event → continues existing episode."""
         active_resp = MagicMock()
-        active_resp.data = [{"id": "ep-exist", "escalation": "LOW", "status": "active"}]
+        active_resp.data = [{"id": "ep-exist", "escalation_level": "LOW", "status": "active"}]
 
         update_resp = MagicMock()
 
@@ -165,7 +165,7 @@ class TestUpdateEpisodeEscalation:
     def test_escalation_goes_up(self):
         """LOW → HIGH: should update."""
         row_resp = MagicMock()
-        row_resp.data = {"escalation": "LOW"}
+        row_resp.data = {"escalation_level": "LOW"}
 
         with patch("routers.services.episode_manager.supabase") as sb:
             tbl = MagicMock()
@@ -180,7 +180,7 @@ class TestUpdateEpisodeEscalation:
     def test_escalation_stays_same_no_update(self):
         """HIGH → HIGH: no update needed."""
         row_resp = MagicMock()
-        row_resp.data = {"escalation": "HIGH"}
+        row_resp.data = {"escalation_level": "HIGH"}
 
         with patch("routers.services.episode_manager.supabase") as sb:
             tbl = MagicMock()
@@ -194,7 +194,7 @@ class TestUpdateEpisodeEscalation:
     def test_escalation_never_lowers(self):
         """CRITICAL → LOW: should NOT update (monotonic invariant)."""
         row_resp = MagicMock()
-        row_resp.data = {"escalation": "CRITICAL"}
+        row_resp.data = {"escalation_level": "CRITICAL"}
 
         with patch("routers.services.episode_manager.supabase") as sb:
             tbl = MagicMock()

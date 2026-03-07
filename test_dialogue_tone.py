@@ -37,14 +37,9 @@ def _call_with_pet_profile(pet_profile) -> str:
     """
     captured = {}
 
-    def fake_create(**kwargs):
-        captured["messages"] = kwargs.get("messages", [])
-        mock_resp = MagicMock()
-        mock_resp.choices[0].message.content = "Тестовый ответ."
-        return mock_resp
-
-    mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = fake_create
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        return "Тестовый ответ."
 
     clinical_decision = {
         "symptom": "vomiting",
@@ -68,7 +63,7 @@ def _call_with_pet_profile(pet_profile) -> str:
         "max_questions": 2,
     }
 
-    with patch.object(ai_module, "client", mock_client):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         generate_ai_response(AIResponseRequest(
             pet_profile=pet_profile,
             recent_events=[],
@@ -79,7 +74,7 @@ def _call_with_pet_profile(pet_profile) -> str:
             llm_contract=llm_contract,
         ))
 
-    return captured["messages"][0]["content"] if captured.get("messages") else ""
+    return captured.get("system", "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

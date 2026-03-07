@@ -35,19 +35,15 @@ def _make_decision(response_type="ASSESS", symptom="vomiting", today=2):
 
 
 def _call_generate_and_capture(decision, llm_contract=None):
-    """Call generate_ai_response with mock OpenAI; return (user_prompt_sent, ai_response)."""
+    """Call generate_ai_response with mock _call_llm; return (user_prompt_sent, ai_response)."""
     captured = {}
 
-    def fake_create(**kwargs):
-        captured["messages"] = kwargs.get("messages", [])
-        mock_resp = MagicMock()
-        mock_resp.choices[0].message.content = "Тестовый детерминированный ответ."
-        return mock_resp
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "Тестовый детерминированный ответ."
 
-    mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = fake_create
-
-    with patch.object(ai_module, "client", mock_client):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         result = generate_ai_response(AIResponseRequest(
             pet_profile={"name": "Бони", "species": "dog", "breed": "beagle", "birth_date": "2020-01-01"},
             recent_events=[],
@@ -62,7 +58,7 @@ def _call_generate_and_capture(decision, llm_contract=None):
             llm_contract=llm_contract,
         ))
 
-    user_prompt = captured["messages"][1]["content"] if len(captured.get("messages", [])) > 1 else ""
+    user_prompt = captured.get("user_prompt", "")
     return user_prompt, result
 
 
@@ -166,16 +162,12 @@ class TestDeterministicPromptInjection(unittest.TestCase):
     def test_no_decision_uses_freeform_prompt(self):
         captured = {}
 
-        def fake_create(**kwargs):
-            captured["messages"] = kwargs.get("messages", [])
-            mock_resp = MagicMock()
-            mock_resp.choices[0].message.content = "ok"
-            return mock_resp
+        def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+            captured["system"] = system_prompt
+            captured["user_prompt"] = user_prompt
+            return "ok"
 
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = fake_create
-
-        with patch.object(ai_module, "client", mock_client):
+        with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
             generate_ai_response(AIResponseRequest(
                 pet_profile={"name": "X", "species": "dog", "breed": "lab", "birth_date": "2020-01-01"},
                 recent_events=[],
@@ -183,7 +175,7 @@ class TestDeterministicPromptInjection(unittest.TestCase):
                 clinical_decision=None,
             ))
 
-        user_prompt = captured["messages"][1]["content"]
+        user_prompt = captured["user_prompt"]
         self.assertIn("Профиль", user_prompt)
 
     # T7: With clinical_decision → deterministic prompt replaces freeform (no "Профиль")

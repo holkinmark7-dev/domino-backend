@@ -9,8 +9,6 @@ from routers.services.memory import (
     get_recent_events,
     get_pet_profile,
     get_medical_events,
-    get_user_flags,
-    update_user_flags,
     ensure_user_exists,
 )
 from routers.services.ai import generate_ai_response, extract_event_data, AIResponseRequest
@@ -265,6 +263,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         "pet_id": message.pet_id,
         "message": message.message,
         "role": "user",
+        "mode": "user",
     }).execute()
     logger.debug("USER INSERT DATA: %s", chat_data.data)
 
@@ -273,7 +272,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         user_id=message.user_id,
         pet_id=message.pet_id,
         event_type="chat_message",
-        content=message.message
+        content=message.message,
     )
 
     # 3. Extraction + normalization + keyword overrides
@@ -311,19 +310,13 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             pet_id=message.pet_id,
             symptom=_ep_symptom,
             medication=_ep_medication,
-            message_text=message.message
+            message_text=message.message,
         )
         if episode_result.get("episode_id") and _ep_valid:
             structured_data["episode_id"] = episode_result["episode_id"]
     except Exception as e:
         logger.error("[episode tracking] %s", e)
         episode_result = {"episode_id": None, "action": "standalone"}
-
-    # ── REGISTRATION PROMPT CHECK ─────────────────────────────────────
-    _user_flags = get_user_flags(user_id=message.user_id)
-    if _user_flags.get("show_registration_prompt") and _message_mode != "CLINICAL":
-        _message_mode = "REGISTRATION_PROMPT"
-        update_user_flags(user_id=message.user_id, flags={"show_registration_prompt": False})
 
     # ── Onboarding ──
     _ob_result = handle_onboarding(
@@ -466,7 +459,9 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             user_id=message.user_id,
             pet_id=message.pet_id,
             structured_data=structured_data,
-            source_chat_id=chat_data.data[0]["id"] if chat_data.data else None
+            source_chat_id=chat_data.data[0]["id"] if chat_data.data else None,
+            episode_id=episode_result.get("episode_id"),
+            escalation_level=decision.get("escalation", "LOW") if decision else "LOW",
         )
 
     # 4.5. Memory context + temporal awareness
@@ -612,6 +607,13 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             "message": ai_response,
             "role": "ai",
             "linked_chat_id": _user_chat_id,
+            "urgency_score": urgency_score,
+            "risk_level": risk_level,
+            "mode": _message_mode,
+            "metadata": {
+                "episode_id": episode_result.get("episode_id"),
+                "dialogue_mode": dialogue_mode,
+            },
         }).execute()
         logger.debug("AI INSERT SUCCESS")
     except Exception as _ai_save_err:
@@ -627,6 +629,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
                 "pet_id": message.pet_id,
                 "message": _auto_follow["text"],
                 "role": "ai",
+                "mode": "auto_follow",
             }).execute()
         except Exception as _af_err:
             logger.error("[auto_follow persist] %s", _af_err)

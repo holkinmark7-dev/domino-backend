@@ -22,7 +22,7 @@ tests/test_routing_modes.py — 3-MODE AI ROUTING (CASUAL / PROFILE / CLINICAL)
   T18  empty message, no symptom → "CASUAL"
   T19  Regression: 185/185 PASS (previous test suite)
 
-No real OpenAI / Supabase calls — all stubbed.
+No real API / Supabase calls — all stubbed.
 """
 
 import sys
@@ -87,16 +87,12 @@ def _capture_ai(
     """
     captured = {}
 
-    fake_choice = MagicMock()
-    fake_choice.message.content = "stub"
-    fake_response = MagicMock()
-    fake_response.choices = [fake_choice]
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "stub"
 
-    def _fake_create(**kwargs):
-        captured["messages"] = kwargs["messages"]
-        return fake_response
-
-    with patch.object(ai_module.client.chat.completions, "create", side_effect=_fake_create):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         ai_module.generate_ai_response(AIResponseRequest(
             pet_profile=_DUMMY_PET,
             recent_events=[],
@@ -108,8 +104,8 @@ def _capture_ai(
             message_mode=message_mode,
         ))
 
-    system_block = captured["messages"][0]["content"]
-    user_prompt  = captured["messages"][1]["content"]
+    system_block = captured["system"]
+    user_prompt  = captured["user_prompt"]
     return system_block, user_prompt
 
 
@@ -218,8 +214,6 @@ def _call_create(
         }),
         patch("routers.services.onboarding_router.get_owner_name", return_value="Марк"),
         patch("routers.services.onboarding_router.save_owner_name"),
-        patch("routers.chat.get_user_flags", return_value={}),
-        patch("routers.chat.update_user_flags"),
     ):
         result = chat_module.create_chat_message(msg)
 

@@ -8,7 +8,7 @@ tests/test_anti_redundancy.py — ANTI-REDUNDANCY GUARD in ai.py
   T4  _redundancy_block appears after _off_topic_block and before main Russian text
   T5  Regression: full suite (test_ai_prompt_fix.py) all PASS
 
-No OpenAI calls — client.chat.completions.create is patched to a dummy.
+No API calls — client.messages.create is patched to a dummy.
 """
 
 import sys
@@ -61,16 +61,12 @@ def _capture(
     """
     captured = {}
 
-    fake_choice = MagicMock()
-    fake_choice.message.content = "stub"
-    fake_response = MagicMock()
-    fake_response.choices = [fake_choice]
+    def _fake_call_llm(config, system_prompt, user_prompt, max_tokens=600):
+        captured["system"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "stub"
 
-    def _fake_create(**kwargs):
-        captured["messages"] = kwargs["messages"]
-        return fake_response
-
-    with patch.object(ai_module.client.chat.completions, "create", side_effect=_fake_create):
+    with patch.object(ai_module, "_call_llm", side_effect=_fake_call_llm):
         ai_module.generate_ai_response(AIResponseRequest(
             pet_profile=pet_profile or _DUMMY_PET,
             recent_events=[],
@@ -80,7 +76,7 @@ def _capture(
             previous_assistant_text=previous_assistant_text,
         ))
 
-    system_block = captured["messages"][0]["content"]
+    system_block = captured["system"]
     return system_block
 
 

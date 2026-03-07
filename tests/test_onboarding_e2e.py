@@ -118,10 +118,6 @@ def _call_onboarding(
         stack.enter_context(patch(
             "routers.services.onboarding_router.update_user_flags",
         ))
-        stack.enter_context(patch("routers.chat.get_user_flags", return_value={
-            "show_registration_prompt": False,
-        }))
-        stack.enter_context(patch("routers.chat.update_user_flags"))
 
         # Clinical router mocks (not the focus but needed)
         stack.enter_context(patch(
