@@ -51,15 +51,10 @@ _ONBOARDING_COMPLETE = {"complete": True, "next_question": None, "phase": "compl
 
 @pytest.fixture(autouse=True)
 def mock_onboarding_status():
-    with ExitStack() as stack:
-        stack.enter_context(patch(
-            "routers.services.memory.get_onboarding_status",
-            return_value=_ONBOARDING_COMPLETE,
-        ))
-        stack.enter_context(patch(
-            "routers.services.onboarding_router.get_onboarding_status",
-            return_value=_ONBOARDING_COMPLETE,
-        ))
+    with patch(
+        "routers.services.memory.get_onboarding_status",
+        return_value=_ONBOARDING_COMPLETE,
+    ):
         yield
 
 

@@ -207,13 +207,15 @@ def _call_create(
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
-        patch("routers.services.onboarding_router.get_onboarding_status", return_value={
-            "complete": True,
-            "next_question": None,
-            "answered": ["species", "name", "gender", "neutered", "age"],
+        patch("routers.chat.handle_onboarding", side_effect=lambda message_text, user_id, pet_id, pet_profile, structured_data, message_mode, supabase_client: {
+            "message_mode": message_mode,
+            "next_question": None, "owner_name": "Марк",
+            "onboarding_phase": "complete", "onboarding_step": None,
+            "auto_follow": None, "quick_replies": [], "input_type": "text",
+            "is_off_topic": False, "onboarding_deterministic": False,
+            "ai_response_override": None, "chat_history": [],
+            "pet_profile_updated": None, "validation": None,
         }),
-        patch("routers.services.onboarding_router.get_owner_name", return_value="Марк"),
-        patch("routers.services.onboarding_router.save_owner_name"),
     ):
         result = chat_module.create_chat_message(msg)
 

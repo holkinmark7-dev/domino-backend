@@ -15,7 +15,7 @@ from routers.services.ai import generate_ai_response, extract_event_data, AIResp
 from routers.services.symptom_registry import normalize_symptom
 from routers.services.symptom_class_registry import get_symptom_class
 from routers.services.episode_manager import process_event, update_episode_escalation
-from routers.services.onboarding_router import handle_onboarding
+from routers.services.onboarding_new import handle_onboarding
 from routers.services.clinical_router import build_full_clinical_decision
 from routers.services.decision_postprocess import postprocess_decision
 from routers.services.chat_helpers import (
