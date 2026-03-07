@@ -1,5 +1,5 @@
 """
-Onboarding v4 — Chat-native FSM (14 states).
+Onboarding v5 — Chat-native FSM (15 states).
 Replaces onboarding.py + onboarding_router.py.
 """
 
@@ -21,7 +21,8 @@ class OnboardingState(str, Enum):
     BREED           = "BREED"              # Шаг 6 — порода (фото или текст)
     BREED_INSIGHT   = "BREED_INSIGHT"      # Шаг 6 — инсайт после ввода породы
     AGE             = "AGE"                # Шаг 7 — возраст / дата рождения
-    GENDER_NEUTERED = "GENDER_NEUTERED"    # Шаг 8 — пол + кастрация/стерилизация
+    GENDER          = "GENDER"             # Шаг 8a — пол (только для собак)
+    NEUTERED        = "NEUTERED"           # Шаг 8b — кастрация/стерилизация
     PHOTO_AVATAR    = "PHOTO_AVATAR"       # Шаг 9 — фото питомца для карточки
     CONFIRM_SUMMARY = "CONFIRM_SUMMARY"    # Шаг 10 — финальная карточка питомца
     COMPLETE        = "COMPLETE"           # Онбординг завершён
@@ -39,8 +40,9 @@ TRANSITIONS = {
     OnboardingState.PASSPORT_OCR:    OnboardingState.BREED,
     OnboardingState.BREED:           OnboardingState.BREED_INSIGHT,
     OnboardingState.BREED_INSIGHT:   OnboardingState.AGE,
-    OnboardingState.AGE:             OnboardingState.GENDER_NEUTERED,
-    OnboardingState.GENDER_NEUTERED: OnboardingState.PHOTO_AVATAR,
+    OnboardingState.AGE:             OnboardingState.GENDER,
+    OnboardingState.GENDER:          OnboardingState.NEUTERED,
+    OnboardingState.NEUTERED:        OnboardingState.PHOTO_AVATAR,
     OnboardingState.PHOTO_AVATAR:    OnboardingState.CONFIRM_SUMMARY,
     OnboardingState.CONFIRM_SUMMARY: OnboardingState.COMPLETE,
 }
@@ -108,6 +110,8 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
 
 
 def _handle_species_clarify(user_input, pet_profile, user_flags):
+    species = user_input.strip().lower()
+    user_flags["species"] = species
     return _make_response("[SPECIES_CLARIFY]", OnboardingState.PASSPORT_OFFER, user_flags, pet_profile)
 
 
@@ -135,11 +139,26 @@ def _handle_breed_insight(user_input, pet_profile, user_flags):
 
 
 def _handle_age(user_input, pet_profile, user_flags):
-    return _make_response("[AGE]", OnboardingState.GENDER_NEUTERED, user_flags, pet_profile)
+    species = user_flags.get("species", "")
+    if species == "кот":
+        user_flags["gender"] = "самец"
+        next_state = OnboardingState.NEUTERED
+    elif species == "кошка":
+        user_flags["gender"] = "самка"
+        next_state = OnboardingState.NEUTERED
+    else:
+        next_state = OnboardingState.GENDER
+    return _make_response("[AGE]", next_state, user_flags, pet_profile)
 
 
-def _handle_gender_neutered(user_input, pet_profile, user_flags):
-    return _make_response("[GENDER_NEUTERED]", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile)
+def _handle_gender(user_input, pet_profile, user_flags):
+    gender = user_input.strip().lower()
+    user_flags["gender"] = gender
+    return _make_response("[GENDER]", OnboardingState.NEUTERED, user_flags, pet_profile)
+
+
+def _handle_neutered(user_input, pet_profile, user_flags):
+    return _make_response("[NEUTERED]", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile)
 
 
 def _handle_photo_avatar(user_input, pet_profile, user_flags):
@@ -175,7 +194,8 @@ _HANDLERS = {
     OnboardingState.BREED:           _handle_breed,
     OnboardingState.BREED_INSIGHT:   _handle_breed_insight,
     OnboardingState.AGE:             _handle_age,
-    OnboardingState.GENDER_NEUTERED: _handle_gender_neutered,
+    OnboardingState.GENDER:          _handle_gender,
+    OnboardingState.NEUTERED:        _handle_neutered,
     OnboardingState.PHOTO_AVATAR:    _handle_photo_avatar,
     OnboardingState.CONFIRM_SUMMARY: _handle_confirm_summary,
     OnboardingState.COMPLETE:        _handle_complete,
