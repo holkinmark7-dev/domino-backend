@@ -22,7 +22,7 @@ class ModelConfig:
 MODELS = {
     "gemini_flash": ModelConfig(
         provider="google",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         api_key_env="GEMINI_API_KEY",
     ),
     "haiku": ModelConfig(
