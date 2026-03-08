@@ -9,6 +9,54 @@ from routers.services.memory import get_user_flags, update_user_flags
 from routers.services.onboarding_gemini import parse_pet_info, apply_parsed_to_flags, get_states_to_skip
 
 
+# ── Name declension ──────────────────────────────────────────────────────────
+
+def _decline_name(name: str, case: str) -> str:
+    """
+    Простое склонение кличек питомцев.
+    case: "gen" — родительный (у Бобика)
+          "dat" — дательный (Бобику)
+          "acc" — винительный (сфотографируйте Бобика)
+    Правила только для самых частых окончаний.
+    Если не знаем как склонять — возвращаем имя как есть.
+    """
+    if not name:
+        return name
+
+    n = name.strip()
+    low = n.lower()
+
+    # Окончание на -а/-я (Барсика, Мурка → Мурки)
+    if low.endswith("а"):
+        stem = n[:-1]
+        if case == "gen":   return stem + "и"
+        if case == "dat":   return stem + "е"
+        if case == "acc":   return stem + "у"
+
+    if low.endswith("я"):
+        stem = n[:-1]
+        if case == "gen":   return stem + "и"
+        if case == "dat":   return stem + "е"
+        if case == "acc":   return stem + "ю"
+
+    # Окончание на согласную (Бобик, Марс, Лорд)
+    consonants = "бвгджзйклмнпрстфхцчшщ"
+    if low[-1] in consonants:
+        if case == "gen":   return n + "а"
+        if case == "dat":   return n + "у"
+        if case == "acc":   return n + "а"
+
+    # Окончание на -ь (Огонь, Тень)
+    if low.endswith("ь"):
+        stem = n[:-1]
+        if case == "gen":   return stem + "я"
+        if case == "dat":   return stem + "ю"
+        if case == "acc":   return stem + "я"
+
+    # Всё остальное — не склоняем
+    return n
+
+
 # ── Validation messages (used in Этап 5) ─────────────────────────────────────
 
 VALIDATION_MESSAGES = {
@@ -244,7 +292,7 @@ def _handle_species_clarify(user_input, pet_profile, user_flags):
 def _handle_passport_offer(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "вашего питомца")
     message = (
-        f"Кстати — у {pet_name} есть ветеринарный паспорт? "
+        f"Кстати — у {_decline_name(pet_name, 'gen')} есть ветеринарный паспорт? "
         "Если да, я могу прочитать его фото и заполнить карточку автоматически"
     )
     return _make_response(
@@ -269,7 +317,7 @@ def _handle_passport_ocr(user_input, pet_profile, user_flags):
 def _handle_breed(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомца")
     message = (
-        f"Хотите — сфотографируйте {pet_name}, "
+        f"Хотите — сфотографируйте {_decline_name(pet_name, 'acc')}, "
         "и я постараюсь определить породу и окрас по фото.\n"
         "Или вы уже знаете породу?"
     )
@@ -290,7 +338,7 @@ def _handle_breed_insight(user_input, pet_profile, user_flags):
         insight = "Отличный питомец!"
 
     age_question = (
-        f"Сколько лет {pet_name}? Если знаете точную дату — напишите её, "
+        f"Сколько лет {_decline_name(pet_name, 'dat')}? Если знаете точную дату — напишите её, "
         "если нет — просто год или примерный возраст"
     )
 
@@ -372,7 +420,7 @@ def _handle_neutered(user_input, pet_profile, user_flags):
 def _handle_photo_avatar(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомца")
     message = (
-        f"Последнее — хотите добавить фото {pet_name} для карточки? "
+        f"Последнее — хотите добавить фото {_decline_name(pet_name, 'gen')} для карточки? "
         "Любое любимое"
     )
     return _make_response(
@@ -394,7 +442,7 @@ def _handle_confirm_summary(user_input, pet_profile, user_flags):
     neutered_text = "Да" if neutered is True else ("Нет" if neutered is False else "Не указано")
     gender_text = "Самец" if gender == "самец" else ("Самка" if gender == "самка" else "")
 
-    message = f"Готово! Карточка {pet_name} готова. Всё верно?"
+    message = f"Готово! Карточка {_decline_name(pet_name, 'gen')} готова. Всё верно?"
 
     card = {
         "name": pet_name,
