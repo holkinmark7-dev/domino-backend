@@ -66,6 +66,31 @@ def _parse_medical_events(pet_id: str) -> dict:
     return lookup
 
 
+@router.get("/chat/history/onboarding")
+@limiter.limit("30/minute")
+def get_onboarding_history(request: Request, current_user: dict = Depends(get_current_user)):
+    """Return chronological onboarding messages (pet_id IS NULL) for current user."""
+    user_id = current_user["id"]
+    result = (
+        supabase.table("chat")
+        .select("id, role, message, created_at, mode")
+        .eq("user_id", user_id)
+        .is_("pet_id", "null")
+        .order("created_at", desc=False)
+        .execute()
+    )
+    messages = []
+    for row in (result.data or []):
+        messages.append({
+            "id": row["id"],
+            "role": row["role"],
+            "content": row["message"],
+            "created_at": row["created_at"],
+            "mode": row.get("mode"),
+        })
+    return messages
+
+
 @router.get("/chat/history/{pet_id}")
 @limiter.limit("30/minute")
 def get_chat_history(pet_id: str, request: Request = None, current_user: dict = Depends(get_current_user)):

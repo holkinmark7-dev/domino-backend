@@ -557,9 +557,18 @@ def handle_onboarding(
     set_state(user_flags, next_state)
     update_user_flags(user_id, user_flags)
 
-    # On COMPLETE: create pet + update user
+    # On COMPLETE: create pet + update user + bind chat history
     if next_state == OnboardingState.COMPLETE:
         pet_id_created = _create_pet_from_flags(user_id, user_flags, supabase_client)
+
+        # Привязываем онбординг-историю (pet_id=NULL) к созданному питомцу
+        if pet_id_created:
+            try:
+                supabase_client.table("chat").update(
+                    {"pet_id": pet_id_created}
+                ).eq("user_id", user_id).is_("pet_id", "null").execute()
+            except Exception:
+                pass  # не блокируем финал если привязка не удалась
 
         update_data = {"is_onboarded": True}
         owner_name = user_flags.get("owner_name")
