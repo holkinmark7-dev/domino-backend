@@ -350,6 +350,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _ai_response_override = _ob_result["ai_response_override"]
     _chat_history = _ob_result["chat_history"]
     _onboarding_pet_id = _ob_result.get("pet_id")
+    _onboarding_pet_name = _ob_result.get("pet_name")
+    _onboarding_pet_card = _ob_result.get("pet_card")
     if _ob_result["pet_profile_updated"]:
         pet_profile = _ob_result["pet_profile_updated"]
 
@@ -637,7 +639,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         traceback.print_exc()
 
     # Сохраняем auto_follow как отдельное сообщение в чат
-    if _auto_follow:
+    if isinstance(_auto_follow, dict):
         try:
             supabase.table("chat").insert({
                 "user_id": message.user_id,
@@ -672,6 +674,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         "input_type": _input_type,
         "auto_follow": _auto_follow,
         "pet_id": _onboarding_pet_id,
+        "pet_name": _onboarding_pet_name,
+        "pet_card": _onboarding_pet_card,
     }
 
     # Persist final triage escalation to episode (monotonic invariant)

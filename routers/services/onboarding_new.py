@@ -90,6 +90,7 @@ def _make_response(
     quick_replies: list = None,
     input_type: str = "text",
     auto_follow: bool = None,
+    pet_card: dict = None,
 ) -> dict:
     return {
         "message_mode": "ONBOARDING" if next_state != OnboardingState.COMPLETE else "ONBOARDING_COMPLETE",
@@ -108,6 +109,7 @@ def _make_response(
         "pet_profile": pet_profile or {},
         "pet_id": None,
         "pet_name": user_flags.get("pet_name"),
+        "pet_card": pet_card,
     }
 
 
@@ -118,12 +120,15 @@ def _create_pet_from_flags(user_id: str, user_flags: dict, supabase_client) -> s
     Создаёт запись в таблице pets из user_flags.
     Возвращает pet_id или None при ошибке.
     """
+    _species_map = {"кот": "cat", "кошка": "cat", "собака": "dog"}
+    _gender_map = {"самец": "male", "самка": "female"}
+
     try:
         pet_data = {
             "user_id": user_id,
             "name":       user_flags.get("pet_name"),
-            "species":    user_flags.get("species"),
-            "gender":     user_flags.get("gender"),
+            "species":    _species_map.get(user_flags.get("species", ""), user_flags.get("species")),
+            "gender":     _gender_map.get(user_flags.get("gender", ""), user_flags.get("gender")),
             "neutered":   user_flags.get("neutered"),
             "birth_date": user_flags.get("birth_date"),
             "age_years":  user_flags.get("age_years"),
@@ -389,18 +394,22 @@ def _handle_confirm_summary(user_input, pet_profile, user_flags):
     neutered_text = "Да" if neutered is True else ("Нет" if neutered is False else "Не указано")
     gender_text = "Самец" if gender == "самец" else ("Самка" if gender == "самка" else "")
 
-    message = (
-        f"Готово! Знакомьтесь — карточка {pet_name}\n\n"
-        f"Вид: {species_text}\n"
-        f"Порода: {breed or 'не указана'}\n"
-        f"Пол: {gender_text or 'не указан'}\n"
-        f"Возраст: {age or 'не указан'} лет\n"
-        f"Кастрация: {neutered_text}\n\n"
-        "Всё верно?"
-    )
+    message = f"Готово! Карточка {pet_name} готова. Всё верно?"
+
+    card = {
+        "name": pet_name,
+        "species": species_text,
+        "breed": breed or "не указана",
+        "gender": gender_text or "не указан",
+        "age": f"{age} лет" if age else "не указан",
+        "neutered": neutered_text,
+        "avatar_url": user_flags.get("avatar_url"),
+    }
+
     return _make_response(
         message, OnboardingState.COMPLETE, user_flags, pet_profile,
         quick_replies=["Всё верно", "Исправить"],
+        pet_card=card,
     )
 
 
