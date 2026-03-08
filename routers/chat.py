@@ -28,7 +28,7 @@ from routers.services.chat_helpers import (
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import json
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, timedelta, date
 import logging
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,63 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+GREETING_COOLDOWN_HOURS = 5
+
+
+def _update_last_seen(user_id: str):
+    """Update last_seen timestamp for the user."""
+    try:
+        supabase.table("users").update(
+            {"last_seen": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", user_id).execute()
+    except Exception as e:
+        logger.warning("[last_seen] update failed: %s", e)
+
+
+def _should_greet(user_id: str) -> bool:
+    """Check if enough time has passed since last_seen (>5 hours)."""
+    try:
+        result = (
+            supabase.table("users")
+            .select("last_seen")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return True
+        last_seen = result.data[0].get("last_seen")
+        if not last_seen:
+            return True
+        last_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return (now - last_dt) > timedelta(hours=GREETING_COOLDOWN_HOURS)
+    except Exception as e:
+        logger.warning("[should_greet] check failed: %s", e)
+        return False
+
+
+def _get_greeting(client_time: str | None) -> str:
+    """Return time-of-day greeting based on client_time or server UTC+3."""
+    hour = None
+    if client_time:
+        try:
+            hour = int(client_time[:2])
+        except (ValueError, IndexError):
+            pass
+    if hour is None:
+        # fallback: server time UTC+3 (Moscow)
+        hour = (datetime.now(timezone.utc) + timedelta(hours=3)).hour
+
+    if 5 <= hour < 12:
+        return "Доброе утро"
+    elif 12 <= hour < 18:
+        return "Добрый день"
+    elif 18 <= hour < 23:
+        return "Добрый вечер"
+    else:
+        return "Доброй ночи"
 
 
 def _extract_and_normalize(message_text: str) -> dict:
@@ -258,7 +315,14 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     ensure_user_exists(message.user_id)
 
+    # ── Greeting logic: check before updating last_seen ──
+    _greeting_prefix = None
     is_onboarding = not bool(message.pet_id)
+    is_welcome = is_onboarding and (not message.message or not message.message.strip())
+    if is_welcome and _should_greet(message.user_id):
+        _greeting_prefix = _get_greeting(message.client_time)
+
+    _update_last_seen(message.user_id)
 
     # 1. Сохраняем сообщение (skip empty — e.g. WELCOME request)
     chat_data_list = []
@@ -336,6 +400,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         structured_data=structured_data,
         message_mode=_message_mode,
         supabase_client=supabase,
+        greeting_prefix=_greeting_prefix,
     )
     _message_mode = _ob_result["message_mode"]
     _next_question = _ob_result["next_question"]

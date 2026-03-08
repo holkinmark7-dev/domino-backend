@@ -200,8 +200,13 @@ def _extract_owner_name(raw: str) -> str:
 # ── State handlers ───────────────────────────────────────────────────────────
 
 def _handle_welcome(user_input, pet_profile, user_flags):
+    greeting = user_flags.pop("_greeting_prefix", None)
+    if greeting:
+        opening = f"{greeting}! Я Домино."
+    else:
+        opening = "Привет! Я Домино."
     message = (
-        "Привет! Я Домино.\n"
+        f"{opening}\n"
         "Я буду рядом с вашим питомцем — помогу следить за здоровьем, "
         "напомню о прививках и буду всегда на связи если что-то пойдёт не так.\n\n"
         "Прежде чем мы начнём — как вас зовут?"
@@ -516,10 +521,15 @@ def handle_onboarding(
     structured_data: dict,
     message_mode: str,
     supabase_client,
+    greeting_prefix: str | None = None,
 ) -> dict:
     """Entry point called from chat.py:322."""
     user_flags = get_user_flags(user_id)
     state = get_current_state(user_flags)
+
+    # Pass greeting to WELCOME handler via user_flags
+    if greeting_prefix and state == OnboardingState.WELCOME:
+        user_flags["_greeting_prefix"] = greeting_prefix
 
     # Already complete — pass through, don't block the system
     if state == OnboardingState.COMPLETE:

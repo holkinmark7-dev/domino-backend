@@ -207,7 +207,7 @@ def _call_create(
             "risk_score": 5,
             "calculated_escalation": "MODERATE",
         }),
-        patch("routers.chat.handle_onboarding", side_effect=lambda message_text, user_id, pet_id, pet_profile, structured_data, message_mode, supabase_client: {
+        patch("routers.chat.handle_onboarding", side_effect=lambda message_text, user_id, pet_id, pet_profile, structured_data, message_mode, supabase_client, greeting_prefix=None: {
             "message_mode": message_mode,
             "next_question": None, "owner_name": "Марк",
             "onboarding_phase": "complete", "onboarding_step": None,
