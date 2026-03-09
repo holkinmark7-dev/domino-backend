@@ -8,8 +8,14 @@ import re
 from datetime import date
 from enum import Enum
 
+from rapidfuzz import fuzz, process
+
+from routers.services.breeds import ALL_BREEDS, _ALL_BREEDS_LOWER
 from routers.services.memory import get_user_flags, update_user_flags
-from routers.services.onboarding_gemini import parse_pet_info, apply_parsed_to_flags, get_states_to_skip
+from routers.services.onboarding_gemini import (
+    parse_pet_info, apply_parsed_to_flags, get_states_to_skip,
+    generate_breed_insight,
+)
 
 
 # ── Name declension ──────────────────────────────────────────────────────────
@@ -65,6 +71,12 @@ def _decline_name(name: str, case: str) -> str:
 _PET_NAME_STOP_WORDS = {
     "мой", "моя", "наш", "наша", "питомец", "питомица", "животное",
     "кот", "кошка", "собака", "пёс", "пес", "котик", "собачка",
+}
+
+_MIXED_BREED_KEYWORDS = {
+    "дворняга", "дворняжка", "метис", "метиска", "беспородный", "беспородная",
+    "дворовый", "дворовая", "мешанка", "помесь", "полукровка",
+    "нет породы", "без породы",
 }
 
 
@@ -391,22 +403,230 @@ def _handle_passport_ocr(user_input, pet_profile, user_flags):
 
 def _handle_breed(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомца")
-    message = (
-        f"Какой породы {_decline_name(pet_name, 'acc')}?\n"
-        "Это поможет мне давать точные советы — у каждой породы свои нюансы."
+
+    # ── First call — show the question ──
+    if not user_input or not user_input.strip():
+        message = (
+            f"Какой породы {_decline_name(pet_name, 'acc')}?\n"
+            "Это поможет мне давать точные советы — у каждой породы свои нюансы."
+        )
+        return _make_response(
+            message, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=["Не знаю породу", "Дворняга или метис"],
+        )
+
+    raw = user_input.strip()
+    raw_lower = raw.lower()
+
+    # ── Confirmation flow: user confirming a breed suggestion ──
+    if user_flags.get("_breed_pending"):
+        pending = user_flags.pop("_breed_pending")
+        if raw_lower in ("да", "да, верно", "верно", "ок", "угу", "ага", "правильно"):
+            user_flags["breed"] = pending
+            user_flags["breed_confirmed"] = True
+            return _make_response(
+                "Записал!", OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+                auto_follow=True,
+            )
+        elif raw_lower in ("нет, другая порода", "нет", "другая"):
+            return _make_response(
+                random.choice([
+                    "Напишите породу — постараюсь найти.",
+                    "Хорошо — напишите как можно точнее, найду в базе.",
+                ]),
+                OnboardingState.BREED, user_flags, pet_profile,
+            )
+        elif raw_lower in ("введу сам", "ввести вручную"):
+            return _make_response(
+                random.choice([
+                    "Введите название породы — я проверю.",
+                    "Хорошо — напишите как можно точнее, найду в базе.",
+                ]),
+                OnboardingState.BREED, user_flags, pet_profile,
+            )
+        # Anything else — treat as new breed input, fall through
+
+    # ── Mixed breed confirmation flow ──
+    if user_flags.get("_breed_mixed_pending"):
+        user_flags.pop("_breed_mixed_pending")
+        if raw_lower in ("да", "да, верно", "верно", "ок", "угу", "ага"):
+            user_flags["breed"] = "беспородный (метис)"
+            user_flags["breed_confirmed"] = True
+            return _make_response(
+                "Записал!", OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+                auto_follow=True,
+            )
+        elif raw_lower in ("нет, есть порода", "нет", "есть порода"):
+            return _make_response(
+                random.choice([
+                    "Напишите породу — постараюсь найти.",
+                    "Хорошо — напишите как можно точнее, найду в базе.",
+                ]),
+                OnboardingState.BREED, user_flags, pet_profile,
+            )
+        # Anything else — treat as new breed input, fall through
+
+    # ── "Не знаю породу" — skip breed ──
+    if raw_lower in ("не знаю породу", "не знаю", "хз", "без понятия"):
+        user_flags["breed"] = None
+        return _make_response(
+            "Записал!", OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+            auto_follow=True,
+        )
+
+    # ── "Сфотографирую" — redirect to photo ──
+    if "сфотографирую" in raw_lower or "сфотографирую питомца" in raw_lower:
+        return _make_response(
+            "Отправьте фото — попробую определить породу.",
+            OnboardingState.BREED, user_flags, pet_profile,
+            input_type="image",
+        )
+
+    # ── Scenario 6: Mixed breed / дворняга ──
+    if raw_lower in _MIXED_BREED_KEYWORDS or any(kw in raw_lower for kw in _MIXED_BREED_KEYWORDS):
+        user_flags["_breed_mixed_pending"] = True
+        msg = random.choice([
+            "Дворняги — отдельная гордость. Запишу как беспородный (метис). Все верно?",
+            "Понял — беспородный. Это честно и это нормально. Подтверждаете?",
+            "Метис — записал. Верно?",
+        ])
+        return _make_response(
+            msg, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=["Да, верно", "Нет, есть порода"],
+        )
+
+    # ── Exact case-insensitive match ──
+    if raw_lower in _ALL_BREEDS_LOWER:
+        # Find the original-cased version
+        exact = next(b for b in ALL_BREEDS if b.lower() == raw_lower)
+        user_flags["breed"] = exact
+        user_flags["breed_confirmed"] = True
+        return _make_response(
+            "Записал!", OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+            auto_follow=True,
+        )
+
+    # ── Substring / prefix match (e.g. "йорк" → "Йоркширский терьер") ──
+    prefix_matches = [b for b in ALL_BREEDS if b.lower().startswith(raw_lower)]
+    if not prefix_matches and len(raw_lower) >= 3:
+        # Check if input is a substring of any breed name
+        prefix_matches = [b for b in ALL_BREEDS if raw_lower in b.lower()]
+
+    if len(prefix_matches) == 1:
+        user_flags["_breed_pending"] = prefix_matches[0]
+        msg = random.choice([
+            f"Имеете в виду {prefix_matches[0]}?",
+            f"Похоже на {prefix_matches[0]} — верно?",
+        ])
+        return _make_response(
+            msg, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=["Да, верно", "Нет, другая порода", "Введу сам"],
+        )
+
+    if len(prefix_matches) >= 2:
+        top3 = prefix_matches[:3]
+        msg = random.choice([
+            "Нашёл несколько похожих пород — какая из них?",
+            "Уточните породу — нашёл несколько вариантов:",
+            "Таких пород несколько — выберите точную:",
+        ])
+        return _make_response(
+            msg, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=top3 + ["Другая"],
+        )
+
+    # ── Fuzzy search (WRatio handles partial matches well) ──
+    matches = process.extract(
+        raw_lower, ALL_BREEDS, scorer=fuzz.WRatio, limit=5,
     )
+    # matches: list of (breed_name, score, index)
+
+    best_name, best_score = (matches[0][0], matches[0][1]) if matches else ("", 0)
+
+    # ── Scenario 3: Near-exact match (score >= 90) ──
+    if best_score >= 90:
+        # Check if multiple breeds have similar high scores
+        top_tier = [m for m in matches if m[1] >= best_score - 5]
+        if len(top_tier) >= 2:
+            # Multiple equally good matches — ask user to pick
+            top3 = [m[0] for m in top_tier[:3]]
+            msg = random.choice([
+                "Нашёл несколько похожих пород — какая из них?",
+                "Уточните породу — нашёл несколько вариантов:",
+            ])
+            return _make_response(
+                msg, OnboardingState.BREED, user_flags, pet_profile,
+                quick_replies=top3 + ["Другая"],
+            )
+        user_flags["breed"] = best_name
+        user_flags["breed_confirmed"] = True
+        return _make_response(
+            "Записал!", OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+            auto_follow=True,
+        )
+
+    # ── Noise filter: WRatio can be generous for unrelated words ──
+    # Confirm with strict ratio — if strict match is very low, it's noise
+    strict_score = fuzz.ratio(raw_lower, best_name.lower())
+    if best_score < 60 or (best_score < 75 and strict_score < 40):
+        msg = random.choice([
+            "Это не совсем порода. Знаете как она называется?",
+            "Хм, не понял породу. Знаете точное название?",
+            "Не распознал породу — попробуйте написать иначе или сфотографируйте питомца.",
+        ])
+        return _make_response(
+            msg, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=["Не знаю породу", "Сфотографирую питомца", "Дворняга или метис"],
+        )
+
+    # Gap filter: keep only matches within 12 points of the best
+    relevant = [m for m in matches if m[1] >= best_score - 12 and m[1] >= 60]
+
+    # ── Scenario 2: Single clear winner (typo or abbreviation) ──
+    if len(relevant) == 1:
+        user_flags["_breed_pending"] = best_name
+        msg = random.choice([
+            f"Не нашёл такую породу — может быть {best_name}?",
+            f"Похоже на опечатку — имеете в виду {best_name}?",
+            f"Не совсем понял породу — вы имели в виду {best_name}?",
+        ])
+        return _make_response(
+            msg, OnboardingState.BREED, user_flags, pet_profile,
+            quick_replies=["Да, верно", "Нет, другая порода", "Введу сам"],
+        )
+
+    # ── Scenario 1: Multiple similar breeds ──
+    top3 = [m[0] for m in relevant[:3]]
+    msg = random.choice([
+        "Нашёл несколько похожих пород — какая из них?",
+        "Уточните породу — нашёл несколько вариантов:",
+        "Таких пород несколько — выберите точную:",
+    ])
     return _make_response(
-        message, OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
+        msg, OnboardingState.BREED, user_flags, pet_profile,
+        quick_replies=top3 + ["Другая"],
     )
 
 
 def _handle_breed_insight(user_input, pet_profile, user_flags):
-    breed = user_flags.get("breed", "")
+    breed = user_flags.get("breed")
+    pet_name = user_flags.get("pet_name", "питомца")
 
-    if breed:
-        message = f"{breed} — замечательный выбор!"
+    if breed and breed != "беспородный (метис)":
+        # Gemini breed insight
+        insight = generate_breed_insight(breed, pet_name)
+        if insight:
+            message = insight
+        else:
+            # Fallback if Gemini fails
+            message = f"{breed} — буду учитывать особенности породы."
+    elif breed == "беспородный (метис)":
+        message = (
+            "Дворняги, как правило, здоровее породистых — "
+            "меньше генетических рисков. Хорошая новость."
+        )
     else:
-        message = "Отличный питомец!"
+        message = "Хорошо, двигаемся дальше."
 
     return _make_response(
         message, OnboardingState.AGE, user_flags, pet_profile,

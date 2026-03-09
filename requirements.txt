@@ -10,3 +10,4 @@ pydantic
 slowapi
 freezegun
 pytest-cov
+rapidfuzz>=3.0.0
