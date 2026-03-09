@@ -14,7 +14,7 @@ from routers.services.breeds import ALL_BREEDS, _ALL_BREEDS_LOWER
 from routers.services.memory import get_user_flags, update_user_flags
 from routers.services.onboarding_gemini import (
     parse_pet_info, apply_parsed_to_flags, get_states_to_skip,
-    generate_breed_insight,
+    generate_breed_insight, classify_onboarding_message,
 )
 
 
@@ -135,6 +135,35 @@ def set_state(user_flags: dict, state: OnboardingState) -> dict:
     return user_flags
 
 
+def _handle_off_topic(msg_type, user_input, current_state, user_flags, pet_profile):
+    """
+    Handle off-topic message during onboarding.
+    Returns _make_response or None if msg_type == "answer".
+    """
+    if msg_type == "answer":
+        return None
+
+    pet_name = user_flags.get("pet_name", "питомца")
+    user_flags["pending_question"] = user_input
+
+    if msg_type == "question":
+        response = random.choice([
+            f"Отвечу обязательно — но сначала давайте закончим знакомство, чтобы я мог дать точный ответ именно для {pet_name}.",
+            "Хороший вопрос. Закончим знакомство — и сразу разберёмся.",
+            f"Запомнил вопрос. Ещё пара минут — и отвечу с учётом всего что знаю о {pet_name}.",
+        ])
+        return _make_response(response, current_state, user_flags, pet_profile,
+                              quick_replies=["Хорошо, продолжим"])
+    else:  # urgent
+        response = random.choice([
+            f"Это важно — разберёмся. Но сначала мне нужно знать кто {pet_name}, чтобы дать правильный совет. Буквально пара вопросов.",
+            "Слышу вас. Давайте быстро закончим знакомство — без этого я не смогу дать точный совет.",
+            "Понял, это срочно. Ещё минута — закончим знакомство, и сразу перейдём к этому.",
+        ])
+        return _make_response(response, current_state, user_flags, pet_profile,
+                              quick_replies=["Хорошо, быстро заканчиваем"])
+
+
 # ── Response builder ──────────────────────────────────────────────────────────
 
 def _make_response(
@@ -165,6 +194,11 @@ def _make_response(
         "pet_id": None,
         "pet_name": user_flags.get("pet_name"),
         "pet_card": pet_card,
+        "user_flags": {
+            k: user_flags.get(k)
+            for k in ("species", "pet_name", "breed", "birth_date",
+                       "age_years", "gender", "neutered", "color")
+        },
     }
 
 
@@ -302,6 +336,12 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
                 "Тогда как зовут вашего питомца?",
                 OnboardingState.PET_INTRO, user_flags, pet_profile,
             )
+
+    # ── Off-topic detection ──
+    msg_type = classify_onboarding_message(user_input, OnboardingState.PET_INTRO.value)
+    off_topic = _handle_off_topic(msg_type, user_input, OnboardingState.PET_INTRO, user_flags, pet_profile)
+    if off_topic:
+        return off_topic
 
     user_flags["pet_intro_raw"] = user_input
 
@@ -495,6 +535,12 @@ def _handle_breed(user_input, pet_profile, user_flags):
             quick_replies=["Да, верно", "Нет, есть порода"],
         )
 
+    # ── Off-topic detection (free text only) ──
+    msg_type = classify_onboarding_message(user_input, OnboardingState.BREED.value)
+    off_topic = _handle_off_topic(msg_type, user_input, OnboardingState.BREED, user_flags, pet_profile)
+    if off_topic:
+        return off_topic
+
     # ── Exact case-insensitive match ──
     if raw_lower in _ALL_BREEDS_LOWER:
         # Find the original-cased version
@@ -657,6 +703,15 @@ def _handle_age(user_input, pet_profile, user_flags):
         user_flags["birth_date"] = None
         return _age_next_state(user_flags, pet_profile)
 
+    # ── Off-topic detection (free text, not dates/numbers/keywords) ──
+    is_date = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', user_input.strip())
+    has_number = re.search(r'\d', age_raw)
+    if not is_date and not has_number:
+        msg_type = classify_onboarding_message(user_input, OnboardingState.AGE.value)
+        off_topic = _handle_off_topic(msg_type, user_input, OnboardingState.AGE, user_flags, pet_profile)
+        if off_topic:
+            return off_topic
+
     # ── ISO date YYYY-MM-DD (from DatePicker) ──
     iso_match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', user_input.strip())
     if iso_match:
@@ -764,23 +819,47 @@ def _handle_neutered(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "ваш питомец")
     gender = user_flags.get("gender", "")
 
-    if gender == "самец":
-        message = (
-            f"{pet_name} кастрирован?\n"
-            "Это важно — влияет на питание и медицинские рекомендации, "
-            "хочу давать вам точные советы."
+    # First call — show the question
+    if not user_input:
+        if gender == "самец":
+            message = (
+                f"{pet_name} кастрирован?\n"
+                "Это важно — влияет на питание и медицинские рекомендации, "
+                "хочу давать вам точные советы."
+            )
+        else:
+            message = (
+                f"{pet_name} стерилизована?\n"
+                "Это важно — влияет на питание и медицинские рекомендации, "
+                "хочу давать вам точные советы."
+            )
+        return _make_response(
+            message, OnboardingState.NEUTERED, user_flags, pet_profile,
+            quick_replies=["Да", "Нет", "Не знаю"],
+            input_type="quick_reply",
         )
+
+    # Process answer
+    low = user_input.strip().lower()
+    if low in ("да", "кастрирован", "стерилизована", "стерилизован"):
+        user_flags["neutered"] = True
+    elif low in ("нет", "не кастрирован", "не стерилизована"):
+        user_flags["neutered"] = False
+    elif low in ("не знаю", "не помню", "хз"):
+        user_flags["neutered"] = None
     else:
-        message = (
-            f"{pet_name} стерилизована?\n"
-            "Это важно — влияет на питание и медицинские рекомендации, "
-            "хочу давать вам точные советы."
+        # Repeat the question
+        word = "кастрирован" if gender == "самец" else "стерилизована"
+        return _make_response(
+            f"Так {pet_name} {word} или нет?",
+            OnboardingState.NEUTERED, user_flags, pet_profile,
+            quick_replies=["Да", "Нет", "Не знаю"],
+            input_type="quick_reply",
         )
 
     return _make_response(
-        message, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
-        quick_replies=["Да", "Нет", "Не знаю"],
-        input_type="quick_reply",
+        "", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
+        auto_follow=True,
     )
 
 
@@ -928,6 +1007,7 @@ def handle_onboarding(
             "pet_profile": pet_profile,
             "pet_id": None,
             "pet_name": user_flags.get("pet_name"),
+            "user_flags": {},
         }
 
     result = route_state(state, message_text, pet_profile, user_flags)

@@ -10,6 +10,8 @@ from routers.services.memory import (
     get_pet_profile,
     get_medical_events,
     ensure_user_exists,
+    get_user_flags,
+    update_user_flags,
 )
 from routers.services.ai import generate_ai_response, extract_event_data, AIResponseRequest
 from routers.services.symptom_registry import normalize_symptom
@@ -421,6 +423,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _onboarding_pet_id = _ob_result.get("pet_id")
     _onboarding_pet_name = _ob_result.get("pet_name")
     _onboarding_pet_card = _ob_result.get("pet_card")
+    _onboarding_user_flags = _ob_result.get("user_flags", {})
     if _ob_result["pet_profile_updated"]:
         pet_profile = _ob_result["pet_profile_updated"]
 
@@ -550,8 +553,19 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             escalation_level=decision.get("escalation", "LOW") if decision else "LOW",
         )
 
-    # 4.5. Memory context + temporal awareness
+    # 4.5. Memory context + temporal awareness + pending question from onboarding
     memory_context, temporal_flag = _build_memory_context(_all_medical_events)
+
+    if not is_onboarding:
+        _uf = get_user_flags(message.user_id)
+        _pending_q = _uf.get("pending_question")
+        if _pending_q:
+            memory_context = (memory_context or "") + (
+                f"\n\nПользователь ранее спрашивал во время онбординга: \"{_pending_q}\". "
+                "Ответь на этот вопрос первым делом, а потом продолжай."
+            )
+            _uf.pop("pending_question")
+            update_user_flags(message.user_id, _uf)
 
     # 5. Urgency + escalation
     _urgency = _compute_urgency(structured_data, decision)
@@ -747,6 +761,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         "pet_id": _onboarding_pet_id,
         "pet_name": _onboarding_pet_name,
         "pet_card": _onboarding_pet_card,
+        "user_flags": _onboarding_user_flags,
     }
 
     # Persist final triage escalation to episode (monotonic invariant)

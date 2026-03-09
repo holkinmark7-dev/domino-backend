@@ -144,6 +144,39 @@ def generate_breed_insight(breed: str, pet_name: str) -> str | None:
         return None
 
 
+CLASSIFY_ONBOARDING_PROMPT = """\
+Пользователь проходит онбординг (знакомство с питомцем).
+Текущий шаг: {current_state}.
+Сообщение пользователя: "{user_input}"
+
+Определи тип сообщения. Верни ТОЛЬКО одно слово:
+- "answer" — если это ответ на вопрос текущего шага
+- "question" — если это обычный вопрос про питомца (питание, прививки, уход)
+- "urgent" — если это симптом или тревога требующая внимания (не ест, температура, рвота, вялый, хромает)
+
+Возвращай ТОЛЬКО одно слово без пояснений.
+"""
+
+
+def classify_onboarding_message(user_input: str, current_state: str) -> str:
+    """
+    Классифицирует сообщение во время онбординга.
+    Возвращает "answer", "question" или "urgent".
+    При ошибке — "answer" (fail-safe, не блокирует онбординг).
+    """
+    try:
+        prompt = CLASSIFY_ONBOARDING_PROMPT.format(
+            current_state=current_state, user_input=user_input,
+        )
+        response = _gemini_model.generate_content(prompt)
+        result = response.text.strip().lower().strip('"\'')
+        if result in ("answer", "question", "urgent"):
+            return result
+        return "answer"
+    except Exception:
+        return "answer"
+
+
 def apply_parsed_to_flags(parsed: dict, user_flags: dict) -> dict:
     """
     Сохраняет распарсенные поля в user_flags.
