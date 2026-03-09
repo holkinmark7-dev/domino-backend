@@ -202,14 +202,14 @@ def _extract_owner_name(raw: str) -> str:
 def _handle_welcome(user_input, pet_profile, user_flags):
     greeting = user_flags.pop("_greeting_prefix", None)
     if greeting:
-        opening = f"{greeting}! Я Домино."
+        opening = f"{greeting}! Я Dominik."
     else:
-        opening = "Привет! Я Домино."
+        opening = "Привет! Я Dominik."
     message = (
         f"{opening}\n"
-        "Я буду рядом с вашим питомцем — помогу следить за здоровьем, "
-        "напомню о прививках и буду всегда на связи если что-то пойдёт не так.\n\n"
-        "Прежде чем мы начнём — как вас зовут?"
+        "Помогу следить за здоровьем вашего питомца — прививки, визиты к врачу, "
+        "симптомы. Всё в одном месте, всегда под рукой.\n"
+        "Как вас зовут?"
     )
     return _make_response(message, OnboardingState.OWNER_NAME, user_flags, pet_profile)
 
@@ -226,16 +226,16 @@ def _handle_owner_name(user_input, pet_profile, user_flags):
     user_flags["owner_name"] = owner_name
 
     message = (
-        f"Приятно познакомиться, {owner_name}!\n\n"
-        "Скажите — что для вас сейчас важнее всего?"
+        f"Приятно познакомиться, {owner_name}.\n"
+        "С чего начнём?"
     )
     return _make_response(
         message, OnboardingState.GOAL, user_flags, pet_profile,
         quick_replies=[
-            "У меня новый питомец — хочу делать всё правильно",
-            "Хочу следить за здоровьем и прививками",
-            "Есть конкретный вопрос по здоровью питомца",
-            "Хочу вести полную медкарту",
+            "У меня новый питомец",
+            "Хочу следить за прививками",
+            "Есть вопрос по здоровью",
+            "Хочу вести медкарту",
         ],
         input_type="quick_reply",
     )
@@ -244,14 +244,23 @@ def _handle_owner_name(user_input, pet_profile, user_flags):
 def _handle_goal(user_input, pet_profile, user_flags):
     user_flags["onboarding_goal"] = user_input
 
-    message = (
-        "Отлично — вы по адресу. Именно для этого я и существую, "
-        "и делаю это без лишней суеты.\n\n"
-        "Давайте познакомимся с вашим питомцем! "
-        "Расскажите о нём — кто он, сколько лет, как его зовут. "
-        "Пишите как захотите — я разберусь."
+    _goal_reactions = {
+        "У меня новый питомец": "Хороший момент чтобы начать всё правильно с самого начала.",
+        "Хочу следить за прививками": "Буду напоминать сам — ничего не пропустите.",
+        "Есть вопрос по здоровью": "Слушаю. Сначала познакомимся с питомцем, потом разберёмся.",
+        "Хочу вести медкарту": "Хорошая привычка — всё в одном месте всегда под рукой.",
+    }
+    reaction = _goal_reactions.get(user_input, "Отлично.")
+
+    pet_intro_text = (
+        "Давайте познакомлюсь с вашим питомцем.\n"
+        "Расскажите о нём — как его зовут, кто он, сколько лет?"
     )
-    return _make_response(message, OnboardingState.PET_INTRO, user_flags, pet_profile)
+
+    message = f"{reaction}\n\n{pet_intro_text}"
+    return _make_response(
+        message, OnboardingState.PET_INTRO, user_flags, pet_profile,
+    )
 
 
 def _handle_pet_intro(user_input, pet_profile, user_flags):
@@ -268,10 +277,7 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
     # Micro-validation — живая реакция на кличку
     pet_name = parsed.get("pet_name") or user_flags.get("pet_name", "")
     if pet_name:
-        message = (
-            f"Записал! {pet_name} — звучит замечательно. "
-            f"Уже представляю такого персонажа"
-        )
+        message = f"{pet_name} — запомнил."
     else:
         message = "Записал, спасибо! Уточню пару деталей"
 
@@ -286,7 +292,7 @@ def _handle_species_clarify(user_input, pet_profile, user_flags):
     user_flags["species"] = species_raw
 
     pet_name = user_flags.get("pet_name", "ваш питомец")
-    message = f"{pet_name} — это кот или кошка? Или собака?"
+    message = f"{pet_name} — кот или кошка? Или собака?"
     return _make_response(
         message, OnboardingState.PASSPORT_OFFER, user_flags, pet_profile,
         quick_replies=["Кот", "Кошка", "Собака"],
@@ -297,21 +303,22 @@ def _handle_species_clarify(user_input, pet_profile, user_flags):
 def _handle_passport_offer(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "вашего питомца")
     message = (
-        f"Кстати — у {_decline_name(pet_name, 'gen')} есть ветеринарный паспорт? "
-        "Если да, я могу прочитать его фото и заполнить карточку автоматически"
+        f"У {_decline_name(pet_name, 'gen')} есть ветеринарный паспорт?\n"
+        "Если есть — сфотографируйте, я прочитаю его и заполню карточку "
+        "автоматически. Займёт секунд 30."
     )
     return _make_response(
         message, OnboardingState.BREED, user_flags, pet_profile,
-        quick_replies=["Сфотографировать паспорт", "Нет, расскажу сам", "Не знаю где он"],
+        quick_replies=["Да, сфотографирую", "Нет, расскажу сам", "Не знаю где он"],
         input_type="quick_reply",
     )
 
 
 def _handle_passport_ocr(user_input, pet_profile, user_flags):
     message = (
-        "Отлично! Сфотографируй главную страницу паспорта — "
-        "ту где основные данные питомца. "
-        "Можно чуть под углом, главное чтобы текст был виден"
+        "Сфотографируйте главную страницу паспорта — "
+        "ту где основные данные о питомце.\n"
+        "Можно чуть под углом, главное чтобы текст был виден."
     )
     return _make_response(
         message, OnboardingState.BREED, user_flags, pet_profile,
@@ -322,40 +329,44 @@ def _handle_passport_ocr(user_input, pet_profile, user_flags):
 def _handle_breed(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомца")
     message = (
-        f"Хотите — сфотографируйте {_decline_name(pet_name, 'acc')}, "
-        "и я постараюсь определить породу и окрас по фото.\n"
-        "Или вы уже знаете породу?"
+        f"Какой породы {_decline_name(pet_name, 'acc')}?\n"
+        "Это поможет мне давать точные советы — у каждой породы свои нюансы."
     )
     return _make_response(
         message, OnboardingState.BREED_INSIGHT, user_flags, pet_profile,
-        quick_replies=["По фото", "Знаю, скажу сам", "Не знаю породу"],
-        input_type="quick_reply",
     )
 
 
 def _handle_breed_insight(user_input, pet_profile, user_flags):
     breed = user_flags.get("breed", "")
-    pet_name = user_flags.get("pet_name", "ваш питомец")
 
     if breed:
-        insight = f"{breed} — замечательный выбор!"
+        message = f"{breed} — замечательный выбор!"
     else:
-        insight = "Отличный питомец!"
+        message = "Отличный питомец!"
 
-    age_question = (
-        f"Сколько лет {_decline_name(pet_name, 'dat')}? Если знаете точную дату — напишите её, "
-        "если нет — просто год или примерный возраст"
-    )
-
-    message = f"{insight}\n\n{age_question}"
     return _make_response(
         message, OnboardingState.AGE, user_flags, pet_profile,
-        quick_replies=["Введу дату", "Только год", "Примерно N лет", "Не знаю"],
+        auto_follow=True,
     )
 
 
 def _handle_age(user_input, pet_profile, user_flags):
     import re
+
+    # First call (from breed_insight auto_follow) — show the question
+    if not user_input or not user_input.strip():
+        pet_name = user_flags.get("pet_name", "вашего питомца")
+        message = (
+            f"Когда у {_decline_name(pet_name, 'dat')} день рождения?\n"
+            "Не только поздравлю — буду знать когда подходит время прививок, "
+            "плановых осмотров и когда переходить на корм для взрослых."
+        )
+        return _make_response(
+            message, OnboardingState.AGE, user_flags, pet_profile,
+            quick_replies=["Введу дату", "Полных лет", "Не знаю"],
+        )
+
     user_flags["age_raw"] = user_input
 
     age_raw = user_input.strip().lower()
@@ -398,10 +409,13 @@ def _handle_gender(user_input, pet_profile, user_flags):
         user_flags["gender"] = raw
 
     pet_name = user_flags.get("pet_name", "ваш питомец")
-    message = f"{pet_name} — мальчик или девочка?"
+    message = (
+        f"{pet_name} — мальчик или девочка?\n"
+        "Это важно для правильных советов по здоровью."
+    )
     return _make_response(
         message, OnboardingState.NEUTERED, user_flags, pet_profile,
-        quick_replies=["Самец", "Самка"],
+        quick_replies=["Мальчик", "Девочка"],
         input_type="quick_reply",
     )
 
@@ -411,9 +425,17 @@ def _handle_neutered(user_input, pet_profile, user_flags):
     gender = user_flags.get("gender", "")
 
     if gender == "самец":
-        message = f"Я уже понял что {pet_name} — мальчик. Он кастрирован?"
+        message = (
+            f"{pet_name} кастрирован?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы."
+        )
     else:
-        message = f"Я уже поняла что {pet_name} — девочка. Она стерилизована?"
+        message = (
+            f"{pet_name} стерилизована?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы."
+        )
 
     return _make_response(
         message, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
@@ -425,12 +447,14 @@ def _handle_neutered(user_input, pet_profile, user_flags):
 def _handle_photo_avatar(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомца")
     message = (
-        f"Последнее — хотите добавить фото {_decline_name(pet_name, 'gen')} для карточки? "
-        "Любое любимое"
+        f"Добавьте фото {_decline_name(pet_name, 'gen')} для карточки.\n"
+        "Так его будет легко узнать, и карточка станет живой — "
+        "не просто данные, а настоящий профиль.\n"
+        "Подойдёт любое фото."
     )
     return _make_response(
         message, OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
-        quick_replies=["Загрузить фото", "Пропустить"],
+        quick_replies=["Загрузить фото", "Пропустить пока"],
         input_type="quick_reply",
     )
 
@@ -447,7 +471,7 @@ def _handle_confirm_summary(user_input, pet_profile, user_flags):
     neutered_text = "Да" if neutered is True else ("Нет" if neutered is False else "Не указано")
     gender_text = "Самец" if gender == "самец" else ("Самка" if gender == "самка" else "")
 
-    message = f"Готово! Карточка {_decline_name(pet_name, 'gen')} готова. Всё верно?"
+    message = "Я записал всё как вы рассказали. Проверьте:\n\nВсё верно?"
 
     card = {
         "name": pet_name,
@@ -461,7 +485,7 @@ def _handle_confirm_summary(user_input, pet_profile, user_flags):
 
     return _make_response(
         message, OnboardingState.COMPLETE, user_flags, pet_profile,
-        quick_replies=["Всё верно", "Исправить"],
+        quick_replies=["Всё верно", "Нужно исправить"],
         pet_card=card,
     )
 
@@ -470,16 +494,16 @@ def _handle_complete(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "питомец")
     owner_name = user_flags.get("owner_name", "")
     message = (
-        f"{owner_name}, {pet_name} теперь под надёжной защитой Домино. "
-        "Можете спрашивать меня всё что угодно — о здоровье, питании, прививках, "
-        "или просто если что-то кажется странным в поведении."
+        f"Карточка {_decline_name(pet_name, 'gen')} готова.\n"
+        f"{owner_name}, я рядом — спрашивайте всё что угодно: здоровье, питание, "
+        "прививки или просто если что-то покажется странным."
     )
     return _make_response(
         message, OnboardingState.COMPLETE, user_flags, pet_profile,
         quick_replies=[
             "Когда нужны прививки?",
             "Чем лучше кормить?",
-            "Что ещё добавить в карточку?",
+            "Добавить данные в карточку",
             "Задать вопрос по здоровью",
         ],
     )
