@@ -3,6 +3,9 @@ Onboarding v5 — Chat-native FSM (15 states).
 Replaces onboarding.py + onboarding_router.py.
 """
 
+import random
+import re
+from datetime import date
 from enum import Enum
 
 from routers.services.memory import get_user_flags, update_user_flags
@@ -57,19 +60,11 @@ def _decline_name(name: str, case: str) -> str:
     return n
 
 
-# ── Validation messages (used in Этап 5) ─────────────────────────────────────
+# ── Pet name stop-words ───────────────────────────────────────────────────────
 
-VALIDATION_MESSAGES = {
-    "owner_name_invalid":  "Хм, это имя? Просто хочу знать как к вам обращаться",
-    "age_unrealistic":     "47 — это рекорд! Наверное имеешь в виду 4 или 7?",
-    "age_future_date":     "Похоже дата в будущем — уточни?",
-    "age_too_young":       "Совсем кроха! Сколько месяцев примерно?",
-    "breed_not_found":     "Такую не нашёл — похоже на {suggestion}? Или запишу как есть",
-    "breed_mixed":         "Дворняга — это почётно! Запишу как беспородный (метис). Ок?",
-    "breed_unknown":       "Хотите — сфотографируйте, я попробую определить",
-    "passport_unreadable": "Хм, не разберу текст — попробуй при лучшем освещении?",
-    "species_unsupported": "Пока работаем только с кошками и собаками — но скоро добавим остальных!",
-    "pet_name_empty":      "А как зовут вашего питомца?",
+_PET_NAME_STOP_WORDS = {
+    "мой", "моя", "наш", "наша", "питомец", "питомица", "животное",
+    "кот", "кошка", "собака", "пёс", "пес", "котик", "собачка",
 }
 
 
@@ -217,11 +212,25 @@ def _handle_welcome(user_input, pet_profile, user_flags):
 def _handle_owner_name(user_input, pet_profile, user_flags):
     owner_name = _extract_owner_name(user_input)
 
-    if len(owner_name) < 2 or any(c.isdigit() for c in owner_name):
-        return _make_response(
-            "Хм, это имя? Просто хочу знать как к вам обращаться",
-            OnboardingState.OWNER_NAME, user_flags, pet_profile,
-        )
+    # Validation: empty / too short / digits / special chars only
+    if (
+        len(owner_name) < 2
+        or any(c.isdigit() for c in owner_name)
+        or not re.search(r'[a-zA-Zа-яА-ЯёЁ]', owner_name)
+    ):
+        msg = random.choice([
+            "Хм, это имя? Просто хочу знать как к вам обращаться.",
+            "Не совсем понял — как вас зовут?",
+        ])
+        return _make_response(msg, OnboardingState.OWNER_NAME, user_flags, pet_profile)
+
+    # Validation: too long
+    if len(owner_name) > 30:
+        msg = random.choice([
+            "Длинновато — можно просто имя?",
+            "Давайте просто имя, без фамилии.",
+        ])
+        return _make_response(msg, OnboardingState.OWNER_NAME, user_flags, pet_profile)
 
     user_flags["owner_name"] = owner_name
 
@@ -264,6 +273,24 @@ def _handle_goal(user_input, pet_profile, user_flags):
 
 
 def _handle_pet_intro(user_input, pet_profile, user_flags):
+    # ── Confirmation flow: user confirming a suspicious pet name ──
+    if user_flags.get("_pet_name_pending"):
+        pending = user_flags.pop("_pet_name_pending")
+        confirm = user_input.strip().lower()
+        if confirm in ("да", "ок", "верно", "правильно", "угу", "ага"):
+            user_flags["pet_name"] = pending
+            message = f"{pending} — запомнил."
+            return _make_response(
+                message, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
+                auto_follow=True,
+            )
+        else:
+            # User said no — ask again
+            return _make_response(
+                "Тогда как зовут вашего питомца?",
+                OnboardingState.PET_INTRO, user_flags, pet_profile,
+            )
+
     user_flags["pet_intro_raw"] = user_input
 
     # Парсинг через Gemini
@@ -274,9 +301,45 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
     skip = get_states_to_skip(parsed, user_flags)
     user_flags["onboarding_skip"] = [s.value for s in skip]
 
-    # Micro-validation — живая реакция на кличку
+    # ── Pet name validation ──
     pet_name = parsed.get("pet_name") or user_flags.get("pet_name", "")
+
     if pet_name:
+        name_lower = pet_name.strip().lower()
+
+        # Too short (1 char)
+        if len(pet_name.strip()) < 2:
+            msg = random.choice([
+                "Одна буква? Может, полное имя?",
+                "Коротковато — как полностью зовут питомца?",
+            ])
+            return _make_response(msg, OnboardingState.PET_INTRO, user_flags, pet_profile)
+
+        # Too long
+        if len(pet_name.strip()) > 30:
+            msg = random.choice([
+                "Длинновато для клички — можно покороче?",
+                "Давайте основное имя, без титулов.",
+            ])
+            return _make_response(msg, OnboardingState.PET_INTRO, user_flags, pet_profile)
+
+        # Digits or special chars only
+        if not re.search(r'[a-zA-Zа-яА-ЯёЁ]', pet_name):
+            msg = random.choice([
+                "Хм, это кличка? Как зовут питомца?",
+                "Не совсем понял — как зовут вашего питомца?",
+            ])
+            return _make_response(msg, OnboardingState.PET_INTRO, user_flags, pet_profile)
+
+        # Stop-word — ask for confirmation
+        if name_lower in _PET_NAME_STOP_WORDS:
+            user_flags["_pet_name_pending"] = pet_name
+            msg = f'Его правда зовут "{pet_name}"? Просто уточняю.'
+            return _make_response(
+                msg, OnboardingState.PET_INTRO, user_flags, pet_profile,
+                quick_replies=["Да", "Нет"],
+            )
+
         message = f"{pet_name} — запомнил."
     else:
         message = "Записал, спасибо! Уточню пару деталей"
@@ -352,8 +415,6 @@ def _handle_breed_insight(user_input, pet_profile, user_flags):
 
 
 def _handle_age(user_input, pet_profile, user_flags):
-    import re
-
     # First call (from breed_insight auto_follow) — show the question
     if not user_input or not user_input.strip():
         pet_name = user_flags.get("pet_name", "вашего питомца")
@@ -368,23 +429,83 @@ def _handle_age(user_input, pet_profile, user_flags):
         )
 
     user_flags["age_raw"] = user_input
-
     age_raw = user_input.strip().lower()
+
+    # ── "Не знаю" — skip age, proceed ──
+    if age_raw in ("не знаю", "не помню", "хз", "без понятия"):
+        user_flags["age_years"] = None
+        user_flags["birth_date"] = None
+        return _age_next_state(user_flags, pet_profile)
+
+    # ── ISO date YYYY-MM-DD (from DatePicker) ──
+    iso_match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', user_input.strip())
+    if iso_match:
+        try:
+            birth = date(int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3)))
+        except ValueError:
+            return _make_response(
+                "Некорректная дата — попробуйте ещё раз.",
+                OnboardingState.AGE, user_flags, pet_profile,
+                quick_replies=["Введу дату", "Полных лет", "Не знаю"],
+            )
+
+        today = date.today()
+        if birth > today:
+            msg = random.choice([
+                "Дата в будущем — проверьте и попробуйте ещё раз.",
+                "Похоже дата ещё не наступила — уточните?",
+            ])
+            return _make_response(
+                msg, OnboardingState.AGE, user_flags, pet_profile,
+                quick_replies=["Введу дату", "Полных лет", "Не знаю"],
+            )
+
+        age_years = (today - birth).days / 365.25
+        user_flags["birth_date"] = user_input.strip()
+        user_flags["age_years"] = round(age_years, 1)
+        return _age_next_state(user_flags, pet_profile)
+
+    # ── Fractional number (e.g. "0.5", "1.5") ──
+    frac_match = re.match(r'^(\d+)[.,](\d+)\s*$', age_raw)
+    if frac_match:
+        msg = random.choice([
+            "Дробный возраст сложно записать — сколько полных месяцев?",
+            "Лучше скажите в месяцах — так точнее будет.",
+        ])
+        return _make_response(msg, OnboardingState.AGE, user_flags, pet_profile)
+
+    # ── Extract number ──
     nums = re.findall(r'\d+', age_raw)
     if nums:
         age = int(nums[0])
-        if age > 30:
-            return _make_response(
-                f"{age} — это рекорд! Наверное имеешь в виду {age // 10} или {age % 10}?",
-                OnboardingState.AGE, user_flags, pet_profile,
-            )
-        if age == 0:
-            return _make_response(
-                "Совсем кроха! Сколько месяцев примерно?",
-                OnboardingState.AGE, user_flags, pet_profile,
-            )
-        user_flags["age_years"] = age
 
+        if age > 30:
+            msg = random.choice([
+                f"{age} — это рекорд! Наверное имеешь в виду {age // 10} или {age % 10}?",
+                f"{age} лет? Уточните возраст — кажется, что-то не так.",
+            ])
+            return _make_response(msg, OnboardingState.AGE, user_flags, pet_profile)
+
+        if age == 0:
+            msg = random.choice([
+                "Совсем кроха! Сколько месяцев примерно?",
+                "Малыш! Напишите возраст в месяцах.",
+            ])
+            return _make_response(msg, OnboardingState.AGE, user_flags, pet_profile)
+
+        user_flags["age_years"] = age
+        return _age_next_state(user_flags, pet_profile)
+
+    # ── No number found ──
+    msg = random.choice([
+        "Не разобрал возраст — напишите цифрой, например: 3",
+        "Напишите возраст цифрой — например, 2 или 5.",
+    ])
+    return _make_response(msg, OnboardingState.AGE, user_flags, pet_profile)
+
+
+def _age_next_state(user_flags, pet_profile):
+    """After successful age parsing — determine next state based on species."""
     species = user_flags.get("species", "")
     if species == "кот":
         user_flags["gender"] = "самец"
@@ -395,8 +516,7 @@ def _handle_age(user_input, pet_profile, user_flags):
     else:
         next_state = OnboardingState.GENDER
 
-    message = "Записал!"
-    return _make_response(message, next_state, user_flags, pet_profile)
+    return _make_response("Записал!", next_state, user_flags, pet_profile)
 
 
 def _handle_gender(user_input, pet_profile, user_flags):
