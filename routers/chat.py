@@ -28,6 +28,7 @@ from routers.services.chat_helpers import (
 from supabase import create_client
 from config import SUPABASE_URL, SUPABASE_KEY
 import json
+import time
 from datetime import datetime, timezone, timedelta, date
 import logging
 
@@ -85,11 +86,11 @@ def _get_greeting(client_time: str | None) -> str:
         # fallback: server time UTC+3 (Moscow)
         hour = (datetime.now(timezone.utc) + timedelta(hours=3)).hour
 
-    if 5 <= hour < 12:
+    if 6 <= hour < 12:
         return "Доброе утро"
     elif 12 <= hour < 18:
         return "Добрый день"
-    elif 18 <= hour < 23:
+    elif 18 <= hour < 24:
         return "Добрый вечер"
     else:
         return "Доброй ночи"
@@ -294,6 +295,8 @@ def _compute_urgency(structured_data: dict, decision: dict) -> dict:
 @router.post("/chat")
 @limiter.limit("10/minute")
 def create_chat_message(message: ChatMessage, request: Request = None, current_user: dict = Depends(get_current_user)):
+    _t0 = time.perf_counter()
+
     if isinstance(current_user, dict) and message.user_id != current_user["id"]:
         return JSONResponse(status_code=403, content={"error": "Forbidden"})
 
@@ -318,8 +321,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     # ── Greeting logic: check before updating last_seen ──
     _greeting_prefix = None
     is_onboarding = not bool(message.pet_id)
-    is_welcome = is_onboarding and (not message.message or not message.message.strip())
-    if is_welcome and _should_greet(message.user_id):
+    if is_onboarding and _should_greet(message.user_id):
         _greeting_prefix = _get_greeting(message.client_time)
 
     _update_last_seen(message.user_id)
@@ -347,6 +349,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     # 3. Extraction + normalization + keyword overrides
     structured_data = _extract_and_normalize(message.message)
+    _t1_extraction = time.perf_counter()
 
     # Message mode classification — CASUAL / PROFILE / CLINICAL
     _message_mode = _classify_message_mode(structured_data, message.message)
@@ -402,6 +405,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         supabase_client=supabase,
         greeting_prefix=_greeting_prefix,
     )
+    _t2_onboarding = time.perf_counter()
     _message_mode = _ob_result["message_mode"]
     _next_question = _ob_result["next_question"]
     _owner_name = _ob_result["owner_name"]
@@ -678,6 +682,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
                 question_guard_triggered = True
                 ai_response = ai_response.replace("?", ".")
 
+    _t3_ai = time.perf_counter()
+
     # Persist AI response to chat table (linked to the user message)
     _user_chat_id = chat_data_list[0]["id"] if chat_data_list else None
     logger.debug("AI RESPONSE: %s", ai_response)
@@ -815,5 +821,14 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             recalculate_day(pet_id=str(message.pet_id), date_str=str(_date_cls.today()))
         except Exception as _tl_err:
             logger.error("[timeline recalc] %s", _tl_err)
+
+    _t4_end = time.perf_counter()
+    logger.info(
+        "[perf] extraction=%.2fs onboarding=%.2fs ai_response=%.2fs total=%.2fs",
+        _t1_extraction - _t0,
+        _t2_onboarding - _t1_extraction,
+        _t3_ai - _t2_onboarding,
+        _t4_end - _t0,
+    )
 
     return response_payload

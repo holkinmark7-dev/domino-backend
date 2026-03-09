@@ -551,9 +551,23 @@ def handle_onboarding(
     user_flags = get_user_flags(user_id)
     state = get_current_state(user_flags)
 
-    # Pass greeting to WELCOME handler via user_flags
-    if greeting_prefix and state == OnboardingState.WELCOME:
-        user_flags["_greeting_prefix"] = greeting_prefix
+    # Greeting for returning user (5h+ cooldown)
+    if greeting_prefix:
+        if state == OnboardingState.WELCOME:
+            # First visit or fresh start — pass to _handle_welcome
+            user_flags["_greeting_prefix"] = greeting_prefix
+        elif state != OnboardingState.COMPLETE:
+            # Mid-onboarding return — greet and offer to continue
+            owner_name = user_flags.get("owner_name", "")
+            pet_name = user_flags.get("pet_name", "питомцем")
+            message = (
+                f"{greeting_prefix}, {owner_name}.\n"
+                f"Продолжим знакомиться с {pet_name}?"
+            )
+            return _make_response(
+                message, state, user_flags, pet_profile,
+                quick_replies=["Да, продолжим", "Начать заново"],
+            )
 
     # Already complete — pass through, don't block the system
     if state == OnboardingState.COMPLETE:
