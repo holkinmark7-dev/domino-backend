@@ -10,6 +10,7 @@ class ChatMessage(BaseModel):
     anonymous_id: Optional[str] = None
     client_time: Optional[str] = None
     image_url: Optional[str] = None
+    passport_ocr_data: Optional[dict] = None
 
     @field_validator("pet_id")
     @classmethod

@@ -396,6 +396,13 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     else:
         episode_result = {"episode_id": None, "action": "standalone"}
 
+    # ── Passport OCR data from frontend ──
+    if is_onboarding and message.passport_ocr_data:
+        from routers.services.onboarding_new import _apply_passport_to_flags
+        _uf_passport = get_user_flags(message.user_id)
+        _apply_passport_to_flags(message.passport_ocr_data, _uf_passport)
+        update_user_flags(message.user_id, _uf_passport)
+
     # ── Onboarding ──
     _ob_result = handle_onboarding(
         message_text=message.message,

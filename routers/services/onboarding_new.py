@@ -417,27 +417,110 @@ def _handle_species_clarify(user_input, pet_profile, user_flags):
 
 def _handle_passport_offer(user_input, pet_profile, user_flags):
     pet_name = user_flags.get("pet_name", "вашего питомца")
-    message = (
-        f"У {_decline_name(pet_name, 'gen')} есть ветеринарный паспорт?\n"
-        "Если есть — сфотографируйте, я прочитаю его и заполню карточку "
-        "автоматически. Займёт секунд 30."
-    )
+
+    # First call — show the question
+    if not user_input or not user_input.strip():
+        message = (
+            f"У {_decline_name(pet_name, 'gen')} есть ветеринарный паспорт?\n"
+            "Если есть — сфотографируйте, я прочитаю его и заполню карточку "
+            "автоматически. Займёт секунд 30."
+        )
+        return _make_response(
+            message, OnboardingState.PASSPORT_OFFER, user_flags, pet_profile,
+            quick_replies=["Да, сфотографирую", "Нет, расскажу сам", "Не знаю где он"],
+            input_type="quick_reply",
+        )
+
+    answer = user_input.strip().lower()
+
+    # "Да, сфотографирую" → PASSPORT_OCR
+    if any(x in answer for x in ("да", "сфотографирую", "есть")):
+        return _make_response(
+            "Сфотографируйте главную страницу паспорта — "
+            "ту где основные данные о питомце.\n"
+            "Можно чуть под углом, главное чтобы текст был виден.",
+            OnboardingState.PASSPORT_OCR, user_flags, pet_profile,
+            input_type="image",
+        )
+
+    # "Нет, расскажу сам" / "Не знаю где он" → skip to BREED
     return _make_response(
-        message, OnboardingState.BREED, user_flags, pet_profile,
-        quick_replies=["Да, сфотографирую", "Нет, расскажу сам", "Не знаю где он"],
-        input_type="quick_reply",
+        "", OnboardingState.BREED, user_flags, pet_profile,
+        auto_follow=True,
     )
+
+
+def _apply_passport_to_flags(ocr_data: dict, user_flags: dict):
+    """Apply passport OCR fields to user_flags. Don't overwrite already-filled fields."""
+    mapping = {
+        "pet_name_ru": "pet_name",
+        "species": "species",
+        "breed_ru": "breed",
+        "birth_date": "birth_date",
+        "gender": "gender",
+        "color": "color",
+    }
+    # species needs normalization: "cat" → "кот"/"кошка", "dog" → "собака"
+    species_map = {"cat": "кот", "dog": "собака"}
+    gender_map = {"male": "самец", "female": "самка"}
+
+    fields = ocr_data.get("fields", ocr_data)
+    for ocr_key, flag_key in mapping.items():
+        value = fields.get(ocr_key)
+        if value and not user_flags.get(flag_key):
+            if flag_key == "species":
+                value = species_map.get(value, value)
+            elif flag_key == "gender":
+                value = gender_map.get(value, value)
+            user_flags[flag_key] = value
+
+    # Compute age_years from birth_date if set
+    if user_flags.get("birth_date") and not user_flags.get("age_years"):
+        try:
+            bd = date.fromisoformat(user_flags["birth_date"])
+            user_flags["age_years"] = round((date.today() - bd).days / 365.25, 1)
+        except (ValueError, TypeError):
+            pass
+
+    # Update skip set based on newly filled fields
+    from routers.services.onboarding_gemini import get_states_to_skip
+    skip = get_states_to_skip(user_flags, user_flags)
+    existing_skip = set(user_flags.get("onboarding_skip", []))
+    existing_skip.update(s.value for s in skip)
+    user_flags["onboarding_skip"] = list(existing_skip)
 
 
 def _handle_passport_ocr(user_input, pet_profile, user_flags):
-    message = (
-        "Сфотографируйте главную страницу паспорта — "
-        "ту где основные данные о питомце.\n"
-        "Можно чуть под углом, главное чтобы текст был виден."
-    )
+    # First call — prompt for photo
+    if not user_input or not user_input.strip():
+        return _make_response(
+            "Сфотографируйте главную страницу паспорта — "
+            "ту где основные данные о питомце.\n"
+            "Можно чуть под углом, главное чтобы текст был виден.",
+            OnboardingState.PASSPORT_OCR, user_flags, pet_profile,
+            input_type="image",
+        )
+
+    answer = user_input.strip().lower()
+
+    # "Расскажу сам" → skip to BREED
+    if any(x in answer for x in ("расскажу", "сам", "пропустить")):
+        return _make_response(
+            "", OnboardingState.BREED, user_flags, pet_profile,
+            auto_follow=True,
+        )
+
+    # "Попробую ещё раз" → stay on PASSPORT_OCR, re-open camera
+    if any(x in answer for x in ("ещё раз", "попробую", "заново")):
+        return _make_response(
+            "Попробуйте ещё раз — хорошее освещение и ровный ракурс помогут.",
+            OnboardingState.PASSPORT_OCR, user_flags, pet_profile,
+            input_type="image",
+        )
+
     return _make_response(
-        message, OnboardingState.BREED, user_flags, pet_profile,
-        input_type="image",
+        "", OnboardingState.BREED, user_flags, pet_profile,
+        auto_follow=True,
     )
 
 

@@ -31,15 +31,13 @@ async def vision_passport(
     Returns structured fields + confidence. Does NOT auto-save.
     Frontend shows PASSPORT_REVIEW → user confirms → POST /vision/passport/confirm.
     """
-    if not body.pet_id:
-        raise HTTPException(status_code=400, detail="pet_id required for passport mode")
-
-    try:
-        UUID(body.pet_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid pet_id")
-
-    verify_pet_owner(body.pet_id, current_user, supabase)
+    # pet_id optional during onboarding (pet not yet created)
+    if body.pet_id:
+        try:
+            UUID(body.pet_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid pet_id")
+        verify_pet_owner(body.pet_id, current_user, supabase)
 
     from routers.services.vision_service import process_passport_ocr
     try:
