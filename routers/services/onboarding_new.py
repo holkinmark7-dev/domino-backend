@@ -223,6 +223,7 @@ def _create_pet_from_flags(user_id: str, user_flags: dict, supabase_client) -> s
             "age_years":  user_flags.get("age_years"),
             "breed":      user_flags.get("breed"),
             "color":      user_flags.get("color"),
+            "avatar_url": user_flags.get("avatar_url"),
         }
         pet_data = {k: v for k, v in pet_data.items() if v is not None}
 
@@ -396,22 +397,46 @@ def _handle_pet_intro(user_input, pet_profile, user_flags):
     else:
         message = "Записал, спасибо! Уточню пару деталей"
 
+    # Объединяем acknowledgment + вопрос про вид, чтобы не было пустого бабла от auto_follow
+    species_question = f"\n\n{pet_name} — кот или кошка? Или собака?" if pet_name else "\n\nКот, кошка или собака?"
     return _make_response(
-        message, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
-        auto_follow=True,
+        message + species_question, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
+        quick_replies=["Кот", "Кошка", "Собака"],
+        input_type="quick_reply",
     )
 
 
 def _handle_species_clarify(user_input, pet_profile, user_flags):
-    species_raw = user_input.strip().lower()
-    user_flags["species"] = species_raw
-
     pet_name = user_flags.get("pet_name", "ваш питомец")
-    message = f"{pet_name} — кот или кошка? Или собака?"
+
+    # First call — показать вопрос
+    if not user_input or not user_input.strip():
+        message = f"{pet_name} — кот или кошка? Или собака?"
+        return _make_response(
+            message, OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
+            quick_replies=["Кот", "Кошка", "Собака"],
+            input_type="quick_reply",
+        )
+
+    # Обработка ответа
+    species_raw = user_input.strip().lower()
+    if "кот" in species_raw and "кошка" not in species_raw:
+        user_flags["species"] = "кот"
+    elif "кошка" in species_raw:
+        user_flags["species"] = "кошка"
+    elif "собак" in species_raw or "пёс" in species_raw or "пес" in species_raw:
+        user_flags["species"] = "собака"
+    else:
+        return _make_response(
+            f"Хм, не понял — {pet_name} кот, кошка или собака?",
+            OnboardingState.SPECIES_CLARIFY, user_flags, pet_profile,
+            quick_replies=["Кот", "Кошка", "Собака"],
+            input_type="quick_reply",
+        )
+
     return _make_response(
-        message, OnboardingState.PASSPORT_OFFER, user_flags, pet_profile,
-        quick_replies=["Кот", "Кошка", "Собака"],
-        input_type="quick_reply",
+        "", OnboardingState.PASSPORT_OFFER, user_flags, pet_profile,
+        auto_follow=True,
     )
 
 
@@ -535,7 +560,7 @@ def _handle_breed(user_input, pet_profile, user_flags):
         )
         return _make_response(
             message, OnboardingState.BREED, user_flags, pet_profile,
-            quick_replies=["Не знаю породу", "Дворняга или метис"],
+            quick_replies=["Сфотографирую питомца", "Не знаю породу", "Дворняга или метис"],
         )
 
     raw = user_input.strip()
@@ -589,6 +614,56 @@ def _handle_breed(user_input, pet_profile, user_flags):
             )
         # Anything else — treat as new breed input, fall through
 
+    # ── Vision breed detection result from frontend ──
+    vision = user_flags.pop("_breed_vision_result", None)
+    if vision is not None:
+        # Save color if Vision detected it and not already set
+        if vision.get("color") and not user_flags.get("color"):
+            user_flags["color"] = vision["color"]
+
+        # Handle Vision errors
+        if not vision.get("success") or vision.get("error"):
+            error_type = vision.get("error", "")
+            if error_type == "no_animal":
+                msg = "На фото не видно животного. Попробуйте сделать фото, где питомец хорошо виден."
+            elif error_type == "poor_photo":
+                msg = "Фото слишком темное или размытое. Попробуйте при хорошем освещении."
+            else:
+                msg = "Не удалось определить породу по фото. Попробуйте ещё раз или напишите породу."
+            return _make_response(
+                msg, OnboardingState.BREED, user_flags, pet_profile,
+                quick_replies=["Попробовать ещё раз", "Не знаю породу"],
+            )
+
+        breeds = vision.get("breeds", [])
+        if breeds:
+            top = breeds[0]
+            top_name = top.get("name_ru", "")
+            top_prob = top.get("probability", 0)
+
+            if len(breeds) == 1 or (top_prob >= 0.7 and (len(breeds) < 2 or top_prob - breeds[1].get("probability", 0) > 0.2)):
+                # Single clear winner
+                user_flags["_breed_pending"] = top_name
+                return _make_response(
+                    f"Похоже на породу {top_name}. Верно?",
+                    OnboardingState.BREED, user_flags, pet_profile,
+                    quick_replies=["Да, верно", "Нет, другая порода"],
+                )
+            else:
+                # Multiple candidates
+                top3 = [b.get("name_ru", "") for b in breeds[:3]]
+                return _make_response(
+                    "По фото нашёл несколько вариантов — какая порода больше подходит?",
+                    OnboardingState.BREED, user_flags, pet_profile,
+                    quick_replies=top3 + ["Другая"],
+                )
+        else:
+            return _make_response(
+                "Не удалось определить породу по фото. Напишите породу или выберите вариант.",
+                OnboardingState.BREED, user_flags, pet_profile,
+                quick_replies=["Не знаю породу", "Дворняга или метис"],
+            )
+
     # ── "Не знаю породу" — skip breed ──
     if raw_lower in ("не знаю породу", "не знаю", "хз", "без понятия"):
         user_flags["breed"] = None
@@ -597,8 +672,9 @@ def _handle_breed(user_input, pet_profile, user_flags):
             auto_follow=True,
         )
 
-    # ── "Сфотографирую" — redirect to photo ──
-    if "сфотографирую" in raw_lower or "сфотографирую питомца" in raw_lower:
+    # ── "Сфотографирую" / "По фото" / "Попробовать ещё раз" — redirect to photo ──
+    _photo_triggers = ("сфотографирую", "по фото", "попробовать ещё раз", "попробую ещё раз", "ещё раз")
+    if any(t in raw_lower for t in _photo_triggers):
         return _make_response(
             "Отправьте фото — попробую определить породу.",
             OnboardingState.BREED, user_flags, pet_profile,
@@ -864,36 +940,87 @@ def _handle_age(user_input, pet_profile, user_flags):
 
 def _age_next_state(user_flags, pet_profile):
     """After successful age parsing — determine next state based on species."""
+    pet_name = user_flags.get("pet_name", "ваш питомец")
     species = user_flags.get("species", "")
     if species == "кот":
         user_flags["gender"] = "самец"
-        next_state = OnboardingState.NEUTERED
+        # Кот → пол уже известен, объединяем с вопросом про кастрацию
+        return _make_response(
+            f"{pet_name} кастрирован?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы.",
+            OnboardingState.NEUTERED, user_flags, pet_profile,
+            quick_replies=["Да", "Нет", "Не знаю"],
+            input_type="quick_reply",
+        )
     elif species == "кошка":
         user_flags["gender"] = "самка"
-        next_state = OnboardingState.NEUTERED
+        # Кошка → пол уже известен, объединяем с вопросом про стерилизацию
+        return _make_response(
+            f"{pet_name} стерилизована?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы.",
+            OnboardingState.NEUTERED, user_flags, pet_profile,
+            quick_replies=["Да", "Нет", "Не знаю"],
+            input_type="quick_reply",
+        )
     else:
-        next_state = OnboardingState.GENDER
-
-    return _make_response("Записал!", next_state, user_flags, pet_profile)
+        # Собака → спросить пол, объединяем с вопросом
+        return _make_response(
+            f"{pet_name} — мальчик или девочка?\n"
+            "Это важно для правильных советов по здоровью.",
+            OnboardingState.GENDER, user_flags, pet_profile,
+            quick_replies=["Мальчик", "Девочка"],
+            input_type="quick_reply",
+        )
 
 
 def _handle_gender(user_input, pet_profile, user_flags):
+    pet_name = user_flags.get("pet_name", "ваш питомец")
+
+    # First call — показать вопрос
+    if not user_input or not user_input.strip():
+        message = (
+            f"{pet_name} — мальчик или девочка?\n"
+            "Это важно для правильных советов по здоровью."
+        )
+        return _make_response(
+            message, OnboardingState.GENDER, user_flags, pet_profile,
+            quick_replies=["Мальчик", "Девочка"],
+            input_type="quick_reply",
+        )
+
+    # Обработка ответа
     raw = user_input.strip().lower()
     if "самец" in raw or "мальчик" in raw:
         user_flags["gender"] = "самец"
     elif "самка" in raw or "девочка" in raw:
         user_flags["gender"] = "самка"
     else:
-        user_flags["gender"] = raw
+        return _make_response(
+            f"{pet_name} — мальчик или девочка?",
+            OnboardingState.GENDER, user_flags, pet_profile,
+            quick_replies=["Мальчик", "Девочка"],
+            input_type="quick_reply",
+        )
 
-    pet_name = user_flags.get("pet_name", "ваш питомец")
-    message = (
-        f"{pet_name} — мальчик или девочка?\n"
-        "Это важно для правильных советов по здоровью."
-    )
+    # Объединяем с вопросом про кастрацию/стерилизацию
+    gender = user_flags["gender"]
+    if gender == "самец":
+        neut_msg = (
+            f"{pet_name} кастрирован?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы."
+        )
+    else:
+        neut_msg = (
+            f"{pet_name} стерилизована?\n"
+            "Это важно — влияет на питание и медицинские рекомендации, "
+            "хочу давать вам точные советы."
+        )
     return _make_response(
-        message, OnboardingState.NEUTERED, user_flags, pet_profile,
-        quick_replies=["Мальчик", "Девочка"],
+        neut_msg, OnboardingState.NEUTERED, user_flags, pet_profile,
+        quick_replies=["Да", "Нет", "Не знаю"],
         input_type="quick_reply",
     )
 
@@ -940,53 +1067,124 @@ def _handle_neutered(user_input, pet_profile, user_flags):
             input_type="quick_reply",
         )
 
-    return _make_response(
-        "", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
-        auto_follow=True,
-    )
-
-
-def _handle_photo_avatar(user_input, pet_profile, user_flags):
-    pet_name = user_flags.get("pet_name", "питомца")
-    message = (
-        f"Добавьте фото {_decline_name(pet_name, 'gen')} для карточки.\n"
+    # Объединяем с вопросом про фото
+    pet_name_gen = _decline_name(user_flags.get("pet_name", "питомца"), "gen")
+    photo_msg = (
+        f"Добавьте фото {pet_name_gen} для карточки.\n"
         "Так его будет легко узнать, и карточка станет живой — "
         "не просто данные, а настоящий профиль.\n"
         "Подойдёт любое фото."
     )
     return _make_response(
-        message, OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
+        photo_msg, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
         quick_replies=["Загрузить фото", "Пропустить пока"],
         input_type="quick_reply",
     )
 
 
-def _handle_confirm_summary(user_input, pet_profile, user_flags):
-    pet_name = user_flags.get("pet_name", "Питомец")
+def _handle_photo_avatar(user_input, pet_profile, user_flags):
+    pet_name = user_flags.get("pet_name", "питомца")
+
+    # First call — показать вопрос (safety net)
+    if not user_input or not user_input.strip():
+        message = (
+            f"Добавьте фото {_decline_name(pet_name, 'gen')} для карточки.\n"
+            "Так его будет легко узнать, и карточка станет живой — "
+            "не просто данные, а настоящий профиль.\n"
+            "Подойдёт любое фото."
+        )
+        return _make_response(
+            message, OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
+            quick_replies=["Загрузить фото", "Пропустить пока"],
+            input_type="quick_reply",
+        )
+
+    raw = user_input.strip().lower()
+
+    # "Загрузить фото" → открыть камеру/галерею
+    if "загрузить" in raw or "фото" in raw:
+        return _make_response(
+            "", OnboardingState.PHOTO_AVATAR, user_flags, pet_profile,
+            input_type="image",
+        )
+
+    # Получили avatar_url от фронтенда
+    if user_input.startswith("avatar_url:"):
+        avatar_url = user_input.replace("avatar_url:", "").strip()
+        user_flags["avatar_url"] = avatar_url
+        return _make_response(
+            "", OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
+            auto_follow=True,
+        )
+
+    # "Пропустить пока" или любой другой ответ → к карточке
+    return _make_response(
+        "", OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
+        auto_follow=True,
+    )
+
+
+def _build_pet_card(user_flags):
+    """Build pet card dict for confirm_summary display."""
     species = user_flags.get("species", "")
-    breed = user_flags.get("breed", "")
-    age = user_flags.get("age_years", "")
     gender = user_flags.get("gender", "")
     neutered = user_flags.get("neutered")
-
-    species_text = {"кот": "Кот", "кошка": "Кошка", "собака": "Собака"}.get(species, species)
-    neutered_text = "Да" if neutered is True else ("Нет" if neutered is False else "Не указано")
-    gender_text = "Самец" if gender == "самец" else ("Самка" if gender == "самка" else "")
-
-    message = "Я записал всё как вы рассказали. Проверьте:\n\nВсё верно?"
-
-    card = {
-        "name": pet_name,
-        "species": species_text,
-        "breed": breed or "не указана",
-        "gender": gender_text or "не указан",
+    age = user_flags.get("age_years", "")
+    return {
+        "name": user_flags.get("pet_name", "Питомец"),
+        "species": {"кот": "Кот", "кошка": "Кошка", "собака": "Собака"}.get(species, species),
+        "breed": user_flags.get("breed") or "не указана",
+        "gender": "Самец" if gender == "самец" else ("Самка" if gender == "самка" else "не указан"),
         "age": f"{age} лет" if age else "не указан",
-        "neutered": neutered_text,
+        "neutered": "Да" if neutered is True else ("Нет" if neutered is False else "Не указано"),
         "avatar_url": user_flags.get("avatar_url"),
     }
 
+
+def _handle_confirm_summary(user_input, pet_profile, user_flags):
+    # First call — показать карточку
+    if not user_input or not user_input.strip():
+        card = _build_pet_card(user_flags)
+        return _make_response(
+            "Я записал всё как вы рассказали. Проверьте:",
+            OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
+            quick_replies=["Всё верно", "Нужно исправить"],
+            pet_card=card,
+        )
+
+    raw = user_input.strip().lower()
+
+    # Пользователь подтвердил → показать completion message
+    if "верно" in raw or "да" in raw or "ок" in raw or "ага" in raw:
+        pet_name = user_flags.get("pet_name", "питомец")
+        owner_name = user_flags.get("owner_name", "")
+        complete_msg = (
+            f"Карточка {_decline_name(pet_name, 'gen')} готова.\n"
+            f"{owner_name}, я рядом — спрашивайте всё что угодно: здоровье, питание, "
+            "прививки или просто если что-то покажется странным."
+        )
+        return _make_response(
+            complete_msg, OnboardingState.COMPLETE, user_flags, pet_profile,
+            quick_replies=[
+                "Когда нужны прививки?",
+                "Чем лучше кормить?",
+                "Добавить данные в карточку",
+                "Задать вопрос по здоровью",
+            ],
+        )
+
+    # Пользователь хочет исправить
+    if "исправить" in raw or "нет" in raw or "неверно" in raw or "ошибка" in raw:
+        return _make_response(
+            "Хорошо — что исправить? Расскажите, и я обновлю карточку.",
+            OnboardingState.PET_INTRO, user_flags, pet_profile,
+        )
+
+    # Непонятный ответ — повторить карточку
+    card = _build_pet_card(user_flags)
     return _make_response(
-        message, OnboardingState.COMPLETE, user_flags, pet_profile,
+        "Всё верно?",
+        OnboardingState.CONFIRM_SUMMARY, user_flags, pet_profile,
         quick_replies=["Всё верно", "Нужно исправить"],
         pet_card=card,
     )
@@ -1071,7 +1269,7 @@ def handle_onboarding(
                 quick_replies=["Да, продолжим", "Начать заново"],
             )
 
-    # Already complete — pass through, don't block the system
+    # Already complete — pass through to normal chat
     if state == OnboardingState.COMPLETE:
         return {
             "message_mode": message_mode,

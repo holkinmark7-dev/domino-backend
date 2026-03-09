@@ -28,7 +28,7 @@ def test_neutered_yes():
     result = _handle_neutered("Да", {}, uf)
     assert uf["neutered"] is True
     assert result["onboarding_step"] == OnboardingState.PHOTO_AVATAR.value
-    assert result["auto_follow"] is not None  # auto_follow=True triggers
+    assert "фото" in result["ai_response_override"].lower()  # combined photo question
 
 
 # ── Answer: "Нет" ────────────────────────────────────────────────────────────
