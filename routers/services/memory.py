@@ -1,11 +1,11 @@
 from supabase import create_client
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 import json
 import logging
 
 logger = logging.getLogger(__name__)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 def ensure_user_exists(user_id: str):

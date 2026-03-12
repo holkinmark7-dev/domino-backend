@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from supabase import create_client
 
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from schemas.vision import (
     VisionRequest, PassportResponse, BreedResponse, SymptomResponse,
     AvatarResponse, PassportConfirmRequest,
@@ -14,7 +14,7 @@ from dependencies.limiter import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 # ── Passport OCR ─────────────────────────────────────────────────────────────

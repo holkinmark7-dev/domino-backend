@@ -59,7 +59,7 @@ def get_model_for_response(
     Args:
         mode: значение req.message_mode —
               CASUAL / PROFILE / CLINICAL / ONBOARDING /
-              ONBOARDING_COMPLETE / ONBOARDING_OBSERVER / REGISTRATION_PROMPT
+              ONBOARDING_COMPLETE / ONBOARDING_OBSERVER
         escalation_level: строка из req.clinical_decision["escalation"] (может быть None)
                           реальные значения: LOW / MODERATE / HIGH / CRITICAL
         has_image: True если в запросе есть изображение
@@ -72,7 +72,7 @@ def get_model_for_response(
         return MODELS["gpt4o"]
 
     # Gemini Flash — всё что не требует медицинского reasoning
-    if mode in {"CASUAL", "PROFILE", "ONBOARDING", "REGISTRATION_PROMPT"}:
+    if mode in {"CASUAL", "PROFILE", "ONBOARDING"}:
         return MODELS["gemini_flash"]
 
     # CLINICAL — зависит от уровня риска

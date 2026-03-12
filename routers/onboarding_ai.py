@@ -22,7 +22,10 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # ── System prompt ──────────────────────────────────────────────────────────────
 
 _PROMPT_PATH = Path(__file__).parent.parent / "design-reference" / "onboarding-prompt.txt"
-_PROMPT_TEMPLATE: str = _PROMPT_PATH.read_text(encoding="utf-8")
+try:
+    _PROMPT_TEMPLATE: str = _PROMPT_PATH.read_text(encoding="utf-8")
+except FileNotFoundError:
+    raise RuntimeError(f"[onboarding_ai] Промпт не найден: {_PROMPT_PATH}")
 
 # Fields to collect (for completion check)
 _REQUIRED_FIELDS = {"owner_name", "pet_name", "species", "breed", "gender", "is_neutered", "goal"}
@@ -117,7 +120,22 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
         }
         result = supabase.table("pets").insert(row).execute()
         if result.data:
-            return result.data[0]["id"]
+            pet_id = result.data[0]["id"]
+
+            # UPDATE users: is_onboarded, onboarding_stage, pet_count, owner_name
+            user_resp = supabase.table("users").select("pet_count").eq("id", user_id).single().execute()
+            current_count = (user_resp.data or {}).get("pet_count") or 0
+            supabase.table("users").update({
+                "is_onboarded": True,
+                "onboarding_stage": "complete",
+                "owner_name": collected.get("owner_name"),
+                "pet_count": current_count + 1,
+            }).eq("id", user_id).execute()
+
+            # UPDATE chat: link onboarding history to new pet
+            supabase.table("chat").update({"pet_id": pet_id}).eq("user_id", user_id).is_("pet_id", "null").execute()
+
+            return pet_id
     except Exception as e:
         logger.error("[create_pet] %s", e)
     return None

@@ -3,7 +3,7 @@ from dependencies.auth import get_current_user, verify_pet_owner
 from dependencies.limiter import limiter
 from pydantic import BaseModel
 from supabase import create_client
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from datetime import date, datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 from collections import Counter
@@ -13,7 +13,7 @@ import re
 from routers.services.heatmap import heatmap_score
 
 router = APIRouter()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 ESCALATION_ORDER = {"LOW": 0, "MODERATE": 1, "HIGH": 2, "CRITICAL": 3}
 

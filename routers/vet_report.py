@@ -19,11 +19,11 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from supabase import create_client
 
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from routers.services.risk_engine import ESCALATION_ORDER
 
 router = APIRouter()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 _EPISODE_FIELDS = "id, normalized_key, escalation_level, status, started_at, resolved_at, updated_at"
 

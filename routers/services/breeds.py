@@ -319,3 +319,7 @@ ALL_BREEDS: list[str] = CAT_BREEDS + DOG_BREEDS
 
 # Lowercase set for fast exact lookups
 _ALL_BREEDS_LOWER: set[str] = {b.lower() for b in ALL_BREEDS}
+
+# Lowercase sets per species — for species inference from breed
+_CAT_BREEDS_LOWER: set[str] = {b.lower() for b in CAT_BREEDS}
+_DOG_BREEDS_LOWER: set[str] = {b.lower() for b in DOG_BREEDS}

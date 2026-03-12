@@ -361,6 +361,14 @@ STRICT RULES:
         _owner = req.owner_name or ""
         _address_done = _owner if _owner else ""
 
+        _pending_q_block = ""
+        if req.memory_context and "спрашивали" in (req.memory_context or ""):
+            _pending_q_block = (
+                f"\n\nВАЖНО: После финального сообщения — ответь на отложенный вопрос "
+                f"пользователя (он указан в контексте). Начни ответ с новой строки: "
+                f"\"Кстати — вы спрашивали про...\". Ответь кратко, 2-3 предложения.\n"
+            )
+
         system_block = (
             f"Ты — Dominik.\n"
             f"Онбординг завершён. Профиль {_pet_name_done} создан полностью.\n"
@@ -370,7 +378,10 @@ STRICT RULES:
             f"3. Скажи что теперь можно спрашивать о здоровье {_pet_name_done} в любое время.\n"
             f"Тон: тёплый, на ты. Никогда не начинай с 'Я' или 'Конечно'.\n"
             f"Только русский язык.\n"
+            f"{_pending_q_block}"
         )
+        if req.memory_context:
+            system_block += f"\nКОНТЕКСТ:\n{req.memory_context}\n"
         user_prompt = f"Сообщение пользователя: {req.user_message}"
 
     elif req.message_mode == "ONBOARDING_OBSERVER":
