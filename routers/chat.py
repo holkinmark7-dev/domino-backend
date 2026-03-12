@@ -17,7 +17,7 @@ from routers.services.ai import generate_ai_response, extract_event_data, AIResp
 from routers.services.symptom_registry import normalize_symptom
 from routers.services.symptom_class_registry import get_symptom_class
 from routers.services.episode_manager import process_event, update_episode_escalation
-from routers.services.onboarding_new import handle_onboarding, _apply_passport_to_flags
+from routers.onboarding_ai import handle_onboarding_ai
 from routers.services.clinical_router import build_full_clinical_decision
 from routers.services.decision_postprocess import postprocess_decision
 from routers.services.chat_helpers import (
@@ -320,15 +320,19 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     ensure_user_exists(message.user_id)
 
-    # ── Greeting logic: check before updating last_seen ──
-    _greeting_prefix = None
-    is_onboarding = not bool(message.pet_id)
-    if is_onboarding and _should_greet(message.user_id):
-        _greeting_prefix = _get_greeting(message.client_time)
+    # ── Onboarding early return — no pet_id means AI-driven onboarding ──
+    if not message.pet_id:
+        _update_last_seen(message.user_id)
+        return handle_onboarding_ai(
+            user_id=message.user_id,
+            message_text=message.message or "",
+            passport_ocr_data=message.passport_ocr_data,
+        )
 
     _update_last_seen(message.user_id)
+    is_onboarding = False  # early return above handles onboarding
 
-    # 1. Сохраняем сообщение (skip empty — e.g. WELCOME request)
+    # 1. Сохраняем сообщение
     chat_data_list = []
     if message.message and message.message.strip():
         chat_data = supabase.table("chat").insert({
@@ -368,8 +372,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _respiratory_recalibrated = False
 
     # Pet profile — early fetch for species/age and vital rules
-    pet_profile = get_pet_profile(pet_id=message.pet_id) if not is_onboarding else {}
-    pet_profile = pet_profile or {}
+    pet_profile = get_pet_profile(pet_id=message.pet_id) or {}
     _species = (pet_profile.get("species") or "").lower() if pet_profile else ""
     _age_years = compute_age_years(pet_profile.get("birth_date") if pet_profile else None)
 
@@ -377,83 +380,40 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     red_flag = _detect_red_flags(message.message)
 
     # 3.55. Episode tracking
-    if not is_onboarding:
-        try:
-            _ep_valid = isinstance(structured_data, dict) and "error" not in structured_data
-            _ep_symptom = structured_data.get("symptom") if _ep_valid else None
-            _ep_medication = structured_data.get("medication") if _ep_valid else None
-            episode_result = process_event(
-                pet_id=message.pet_id,
-                symptom=_ep_symptom,
-                medication=_ep_medication,
-                message_text=message.message,
-            )
-            if episode_result.get("episode_id") and _ep_valid:
-                structured_data["episode_id"] = episode_result["episode_id"]
-        except Exception as e:
-            logger.error("[episode tracking] %s", e)
-            episode_result = {"episode_id": None, "action": "standalone"}
-    else:
+    try:
+        _ep_valid = isinstance(structured_data, dict) and "error" not in structured_data
+        _ep_symptom = structured_data.get("symptom") if _ep_valid else None
+        _ep_medication = structured_data.get("medication") if _ep_valid else None
+        episode_result = process_event(
+            pet_id=message.pet_id,
+            symptom=_ep_symptom,
+            medication=_ep_medication,
+            message_text=message.message,
+        )
+        if episode_result.get("episode_id") and _ep_valid:
+            structured_data["episode_id"] = episode_result["episode_id"]
+    except Exception as e:
+        logger.error("[episode tracking] %s", e)
         episode_result = {"episode_id": None, "action": "standalone"}
 
-    # ── Onboarding: pre-process vision data ──
-    _onboarding_message = message.message
-    if is_onboarding:
-        # Passport OCR data from frontend
-        if message.passport_ocr_data:
-            ocr = message.passport_ocr_data
-            if ocr.get("success") and ocr.get("confidence", 0) >= 0.6:
-                _uf = get_user_flags(message.user_id)
-                _apply_passport_to_flags(ocr, _uf)
-                update_user_flags(message.user_id, _uf)
-                _onboarding_message = "__passport_ocr_applied__"
-            else:
-                _onboarding_message = "__passport_ocr_failed__"
-
-        # Breed detection data from frontend
-        if message.breed_detection_data:
-            bdd = message.breed_detection_data
-            _uf = get_user_flags(message.user_id)
-            if bdd.get("breeds"):
-                _uf["_breed_vision_result"] = bdd
-                if bdd.get("color") and not _uf.get("color"):
-                    _uf["color"] = bdd["color"]
-            else:
-                _uf["_breed_vision_result"] = {"success": False, "error": bdd.get("error", "unknown")}
-            update_user_flags(message.user_id, _uf)
-
-    _ob_result = handle_onboarding(
-        message_text=_onboarding_message,
-        user_id=message.user_id,
-        pet_id=message.pet_id,
-        pet_profile=pet_profile,
-        structured_data=structured_data,
-        message_mode=_message_mode,
-        supabase_client=supabase,
-        greeting_prefix=_greeting_prefix,
-    )
     _t2_onboarding = time.perf_counter()
-    _message_mode = _ob_result["message_mode"]
-    _next_question = _ob_result["next_question"]
-    _owner_name = _ob_result["owner_name"]
-    _onboarding_phase = _ob_result["onboarding_phase"]
-    _onboarding_step = _ob_result["onboarding_step"]
-    _auto_follow = _ob_result["auto_follow"]
-    _quick_replies = _ob_result["quick_replies"]
-    _input_type = _ob_result["input_type"]
-    _is_off_topic = _ob_result["is_off_topic"]
-    _onboarding_deterministic = _ob_result["onboarding_deterministic"]
-    _ai_response_override = _ob_result["ai_response_override"]
-    _chat_history = _ob_result["chat_history"]
-    _onboarding_pet_id = _ob_result.get("pet_id")
-    _onboarding_pet_name = _ob_result.get("pet_name")
-    _onboarding_pet_card = _ob_result.get("pet_card")
-    _onboarding_welcome_card = _ob_result.get("welcome_card")
-    _onboarding_preferred_reply = _ob_result.get("preferred_reply")
-    _onboarding_user_flags = _ob_result.get("user_flags", {})
-    _onboarding_pending_q = _ob_result.get("_pending_question")
-    if _ob_result["pet_profile_updated"]:
-        pet_profile = _ob_result["pet_profile_updated"]
+
+    # Variables formerly set by handle_onboarding — defaults for regular chat
+    _onboarding_step = None
+    _auto_follow = None
+    _quick_replies = []
+    _input_type = "text"
+    _is_off_topic = False
+    _onboarding_deterministic = False
+    _ai_response_override = None
+    _chat_history = []
+    _onboarding_pet_id = None
+    _onboarding_pet_name = None
+    _onboarding_pet_card = None
+    _onboarding_welcome_card = None
+    _onboarding_preferred_reply = None
+    _onboarding_user_flags = {}
+    _onboarding_pending_q = None
 
     # Prefetch medical events — used by both clinical_decision and postprocess
     _all_medical_events = get_medical_events(pet_id=message.pet_id, limit=20) if not is_onboarding else []
