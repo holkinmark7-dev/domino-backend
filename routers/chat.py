@@ -17,7 +17,7 @@ from routers.services.ai import generate_ai_response, extract_event_data, AIResp
 from routers.services.symptom_registry import normalize_symptom
 from routers.services.symptom_class_registry import get_symptom_class
 from routers.services.episode_manager import process_event, update_episode_escalation
-from routers.services.onboarding_new import handle_onboarding
+from routers.services.onboarding_new import handle_onboarding, _apply_passport_to_flags
 from routers.services.clinical_router import build_full_clinical_decision
 from routers.services.decision_postprocess import postprocess_decision
 from routers.services.chat_helpers import (
@@ -28,7 +28,7 @@ from routers.services.chat_helpers import (
     _classify_message_mode,
 )
 from supabase import create_client
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 import json
 import time
 from datetime import datetime, timezone, timedelta, date
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 GREETING_COOLDOWN_HOURS = 5
 
@@ -396,9 +396,34 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     else:
         episode_result = {"episode_id": None, "action": "standalone"}
 
-    # ── Onboarding ──
+    # ── Onboarding: pre-process vision data ──
+    _onboarding_message = message.message
+    if is_onboarding:
+        # Passport OCR data from frontend
+        if message.passport_ocr_data:
+            ocr = message.passport_ocr_data
+            if ocr.get("success") and ocr.get("confidence", 0) >= 0.6:
+                _uf = get_user_flags(message.user_id)
+                _apply_passport_to_flags(ocr, _uf)
+                update_user_flags(message.user_id, _uf)
+                _onboarding_message = "__passport_ocr_applied__"
+            else:
+                _onboarding_message = "__passport_ocr_failed__"
+
+        # Breed detection data from frontend
+        if message.breed_detection_data:
+            bdd = message.breed_detection_data
+            _uf = get_user_flags(message.user_id)
+            if bdd.get("breeds"):
+                _uf["_breed_vision_result"] = bdd
+                if bdd.get("color") and not _uf.get("color"):
+                    _uf["color"] = bdd["color"]
+            else:
+                _uf["_breed_vision_result"] = {"success": False, "error": bdd.get("error", "unknown")}
+            update_user_flags(message.user_id, _uf)
+
     _ob_result = handle_onboarding(
-        message_text=message.message,
+        message_text=_onboarding_message,
         user_id=message.user_id,
         pet_id=message.pet_id,
         pet_profile=pet_profile,
@@ -423,7 +448,10 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     _onboarding_pet_id = _ob_result.get("pet_id")
     _onboarding_pet_name = _ob_result.get("pet_name")
     _onboarding_pet_card = _ob_result.get("pet_card")
+    _onboarding_welcome_card = _ob_result.get("welcome_card")
+    _onboarding_preferred_reply = _ob_result.get("preferred_reply")
     _onboarding_user_flags = _ob_result.get("user_flags", {})
+    _onboarding_pending_q = _ob_result.get("_pending_question")
     if _ob_result["pet_profile_updated"]:
         pet_profile = _ob_result["pet_profile_updated"]
 
@@ -555,6 +583,14 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
 
     # 4.5. Memory context + temporal awareness + pending question from onboarding
     memory_context, temporal_flag = _build_memory_context(_all_medical_events)
+
+    # Proactive pending_question on COMPLETE (from onboarding)
+    if _onboarding_pending_q and _message_mode == "ONBOARDING_COMPLETE":
+        memory_context = (memory_context or "") + (
+            f"\n\nВо время онбординга пользователь спрашивал: \"{_onboarding_pending_q}\". "
+            "После финального сообщения — ответь на этот вопрос кратко (2-3 предложения). "
+            "Начни с: \"Кстати — вы спрашивали про...\""
+        )
 
     if not is_onboarding:
         _uf = get_user_flags(message.user_id)
@@ -715,6 +751,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             "metadata": {
                 "episode_id": episode_result.get("episode_id"),
                 "dialogue_mode": dialogue_mode,
+                "welcome_card": _onboarding_welcome_card,
             },
         }).execute()
         logger.debug("AI INSERT SUCCESS")
@@ -762,6 +799,8 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
         "pet_name": _onboarding_pet_name,
         "pet_card": _onboarding_pet_card,
         "user_flags": _onboarding_user_flags,
+        "welcome_card": _onboarding_welcome_card,
+        "preferred_reply": _onboarding_preferred_reply,
     }
 
     # Persist final triage escalation to episode (monotonic invariant)

@@ -24,10 +24,10 @@ from dependencies.auth import get_current_user, verify_pet_owner
 from dependencies.limiter import limiter
 from supabase import create_client
 
-from config import SUPABASE_URL, SUPABASE_KEY
+from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 router = APIRouter()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # Mirrors risk_level_map in chat.py (line 1223)
 _RISK_MAP = {0: "normal", 1: "low", 2: "moderate", 3: "high"}
@@ -73,7 +73,7 @@ def get_onboarding_history(request: Request, current_user: dict = Depends(get_cu
     user_id = current_user["id"]
     result = (
         supabase.table("chat")
-        .select("id, role, message, created_at, mode")
+        .select("id, role, message, created_at, mode, metadata")
         .eq("user_id", user_id)
         .is_("pet_id", "null")
         .order("created_at", desc=False)
@@ -81,12 +81,14 @@ def get_onboarding_history(request: Request, current_user: dict = Depends(get_cu
     )
     messages = []
     for row in (result.data or []):
+        metadata = row.get("metadata") or {}
         messages.append({
             "id": row["id"],
             "role": row["role"],
             "content": row["message"],
             "created_at": row["created_at"],
             "mode": row.get("mode"),
+            "welcome_card": metadata.get("welcome_card"),
         })
     return messages
 
