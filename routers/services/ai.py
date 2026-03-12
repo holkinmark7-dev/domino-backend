@@ -1,6 +1,7 @@
 import os
 import anthropic
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 from routers.services.response_templates import select_template, get_phase_prefix
 from routers.services.model_router import get_model_for_response, get_model_for_extraction, ModelConfig
 from dataclasses import dataclass
@@ -37,12 +38,14 @@ def _call_llm(config: ModelConfig, system_prompt: str, user_prompt: str, max_tok
         return response.content[0].text if response.content else ""
 
     elif config.provider == "google":
-        genai.configure(api_key=os.getenv(config.api_key_env))
-        model = genai.GenerativeModel(
-            model_name=config.model,
-            system_instruction=system_prompt,
+        client = genai.Client(api_key=os.getenv(config.api_key_env))
+        response = client.models.generate_content(
+            model=config.model,
+            contents=user_prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
         )
-        response = model.generate_content(user_prompt)
         return response.text or ""
 
     else:

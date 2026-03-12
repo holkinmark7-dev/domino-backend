@@ -49,10 +49,14 @@ def _call_anthropic(model: str) -> str:
 
 
 def _call_google(model: str) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    gen_model = genai.GenerativeModel(model, system_instruction=PROMPT_SYSTEM)
-    resp = gen_model.generate_content(PROMPT_USER)
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    resp = client.models.generate_content(
+        model=model,
+        contents=PROMPT_USER,
+        config=types.GenerateContentConfig(system_instruction=PROMPT_SYSTEM),
+    )
     return resp.text
 
 

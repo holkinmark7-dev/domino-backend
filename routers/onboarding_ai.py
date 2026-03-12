@@ -8,7 +8,8 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from fastapi.responses import JSONResponse
 from supabase import create_client
 
@@ -242,14 +243,16 @@ def handle_onboarding_ai(
     # 7. Call Gemini
     try:
         api_key = os.environ.get("GEMINI_API_KEY", "")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=system_prompt,
-        )
+        client = genai.Client(api_key=api_key)
 
         # Start chat with history, then send new message
-        chat = model.start_chat(history=gemini_history)
+        chat = client.chats.create(
+            model="gemini-2.5-flash",
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+            history=gemini_history,
+        )
         response = chat.send_message(actual_message or "Привет")
         raw = response.text or ""
     except Exception as e:

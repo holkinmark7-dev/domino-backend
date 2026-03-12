@@ -45,8 +45,8 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
     mock_chat = MagicMock()
     mock_chat.send_message.return_value = _gemini_response(gemini_payload)
 
-    mock_model = MagicMock()
-    mock_model.start_chat.return_value = mock_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.return_value = mock_chat
 
     with (
         patch(_PATCH_FLAGS, return_value=_make_flags(collected)),
@@ -57,7 +57,7 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
         patch(_PATCH_CREATE_PET, return_value="pet-uuid-1"),
         patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         resp = handle_onboarding_ai(
             user_id="user-test-1",
             message_text=message_text,
@@ -120,8 +120,8 @@ def test_collected_merge():
         "collected": {"owner_name": "Марк"},
         "status": "collecting",
     })
-    mock_model = MagicMock()
-    mock_model.start_chat.return_value = mock_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.return_value = mock_chat
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -132,7 +132,7 @@ def test_collected_merge():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         handle_onboarding_ai("user-1", "Марк")
 
     assert saved_flags.get("onboarding_collected", {}).get("owner_name") == "Марк"
@@ -242,8 +242,8 @@ def test_passport_ocr_applied():
         "collected": {},
         "status": "collecting",
     })
-    mock_model = MagicMock()
-    mock_model.start_chat.return_value = mock_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.return_value = mock_chat
 
     ocr = {
         "success": True,
@@ -263,7 +263,7 @@ def test_passport_ocr_applied():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         handle_onboarding_ai("user-1", "", passport_ocr_data=ocr)
 
     c = saved.get("onboarding_collected", {})
@@ -288,8 +288,8 @@ def test_passport_ocr_low_confidence():
             "status": "collecting",
         })
     )
-    mock_model = MagicMock()
-    mock_model.start_chat.return_value = mock_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.return_value = mock_chat
 
     ocr_bad = {"success": True, "confidence": 0.3}
 
@@ -302,7 +302,7 @@ def test_passport_ocr_low_confidence():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         handle_onboarding_ai("user-1", "", passport_ocr_data=ocr_bad)
 
     assert "__passport_ocr_failed__" in sent_messages
@@ -315,8 +315,8 @@ def test_gemini_error_returns_fallback():
     from routers.onboarding_ai import handle_onboarding_ai
     import json as _json
 
-    mock_model = MagicMock()
-    mock_model.start_chat.side_effect = Exception("API unavailable")
+    mock_client = MagicMock()
+    mock_client.chats.create.side_effect = Exception("API unavailable")
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -327,7 +327,7 @@ def test_gemini_error_returns_fallback():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         resp = handle_onboarding_ai("user-1", "привет")
 
     body = _json.loads(resp.body)
@@ -347,8 +347,8 @@ def test_non_json_gemini_response():
     plain_mock.text = "Привет! Как тебя зовут?"  # not JSON
     mock_chat.send_message.return_value = plain_mock
 
-    mock_model = MagicMock()
-    mock_model.start_chat.return_value = mock_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.return_value = mock_chat
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -359,7 +359,7 @@ def test_non_json_gemini_response():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         resp = handle_onboarding_ai("user-1", "")
 
     body = _json.loads(resp.body)
@@ -381,7 +381,7 @@ def test_chat_history_used_as_context():
 
     captured_history = []
 
-    def capture_start_chat(history=None):
+    def capture_chats_create(model=None, config=None, history=None):
         captured_history.extend(history or [])
         mock_chat = MagicMock()
         mock_chat.send_message.return_value = _gemini_response({
@@ -392,8 +392,8 @@ def test_chat_history_used_as_context():
         })
         return mock_chat
 
-    mock_model = MagicMock()
-    mock_model.start_chat.side_effect = capture_start_chat
+    mock_client = MagicMock()
+    mock_client.chats.create.side_effect = capture_chats_create
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -404,7 +404,7 @@ def test_chat_history_used_as_context():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
     ):
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.Client.return_value = mock_client
         handle_onboarding_ai("user-1", "Рекс")
 
     assert len(captured_history) == 3
