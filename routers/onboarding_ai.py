@@ -268,6 +268,7 @@ def handle_onboarding_ai(
             model="gemini-2.5-flash",
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
+                response_mime_type="application/json",
             ),
             history=gemini_history,
         )
