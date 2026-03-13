@@ -109,6 +109,13 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             if m:
                 birth_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
 
+        age_years = collected.get("age_years")
+        if age_years is not None:
+            try:
+                age_years = float(age_years)
+            except (ValueError, TypeError):
+                age_years = None
+
         row = {
             "user_id": user_id,
             "name": collected.get("pet_name") or "Питомец",
@@ -117,6 +124,7 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             "gender": gender,
             "is_neutered": is_neutered,
             "birth_date": birth_date,
+            "age_years": age_years,
             "color": collected.get("color"),
         }
         result = supabase.table("pets").insert(row).execute()
