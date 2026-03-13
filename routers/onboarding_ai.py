@@ -122,7 +122,7 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             "species": species,
             "breed": collected.get("breed"),
             "gender": gender,
-            "is_neutered": is_neutered,
+            "neutered": is_neutered,
             "birth_date": birth_date,
             "age_years": age_years,
             "color": collected.get("color"),
