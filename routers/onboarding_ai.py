@@ -109,12 +109,11 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             if m:
                 birth_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
 
-        age_years = collected.get("age_years")
-        if age_years is not None:
-            try:
-                age_years = float(age_years)
-            except (ValueError, TypeError):
-                age_years = None
+        age_raw = collected.get("age_years")
+        try:
+            age_years = float(age_raw) if age_raw is not None else None
+        except (ValueError, TypeError):
+            age_years = None
 
         row = {
             "user_id": user_id,
