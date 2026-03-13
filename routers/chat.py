@@ -327,6 +327,7 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
             user_id=message.user_id,
             message_text=message.message or "",
             passport_ocr_data=message.passport_ocr_data,
+            breed_detection_data=message.breed_detection_data,
         )
 
     _update_last_seen(message.user_id)

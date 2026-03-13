@@ -213,6 +213,7 @@ def handle_onboarding_ai(
     user_id: str,
     message_text: str,
     passport_ocr_data: dict | None = None,
+    breed_detection_data: dict | None = None,
 ) -> JSONResponse:
     """
     Handle one turn of AI-driven onboarding.
@@ -238,6 +239,42 @@ def handle_onboarding_ai(
         actual_message = "__passport_ocr_applied__"
     elif passport_ocr_data and not (passport_ocr_data.get("success") and passport_ocr_data.get("confidence", 0) >= 0.6):
         actual_message = "__passport_ocr_failed__"
+
+    # 2b. Handle breed detection data
+    if breed_detection_data and breed_detection_data.get("success"):
+        breeds = breed_detection_data.get("breeds", [])
+        color = breed_detection_data.get("color")
+
+        if breeds:
+            if len(breeds) == 1:
+                b = breeds[0]
+                breed_text = f"По фото определил породу: {b['name_ru']} (уверенность {int(b['probability']*100)}%)"
+            else:
+                breed_lines = "\n".join([f"- {b['name_ru']}: {int(b['probability']*100)}%" for b in breeds[:3]])
+                breed_text = f"По фото вижу несколько вариантов:\n{breed_lines}"
+
+            if color:
+                breed_text += f"\nОкрас: {color}"
+
+            if breeds[0]["probability"] > 0.7:
+                actual_message = breed_text + "\nЗапиши породу автоматически."
+                collected["breed"] = breeds[0]["name_ru"]
+                if color:
+                    collected["color"] = color
+            else:
+                actual_message = breed_text
+
+    # 2c. Handle avatar_url from message text
+    if message_text and message_text.startswith("avatar_url:"):
+        avatar_url = message_text[len("avatar_url:"):]
+        # Find pet_id from flags or recent pet
+        onboarding_pet_id = user_flags.get("onboarding_pet_id")
+        if onboarding_pet_id and avatar_url:
+            try:
+                supabase.table("pets").update({"avatar_url": avatar_url}).eq("id", onboarding_pet_id).execute()
+            except Exception as e:
+                logger.error("[avatar_url] UPDATE pets failed: %s", e)
+        actual_message = "Фото загружено"
 
     # 3. Save user message (skip empty WELCOME ping)
     user_chat_id = None
@@ -320,8 +357,9 @@ def handle_onboarding_ai(
     if status == "complete":
         pet_id = _create_pet(user_id, collected)
         if pet_id:
-            # Clear onboarding data from flags
+            # Clear onboarding data from flags, save pet_id for avatar upload
             user_flags["onboarding_collected"] = None
+            user_flags["onboarding_pet_id"] = pet_id
             update_user_flags(user_id, user_flags)
 
             # Build pet card for UI
@@ -358,6 +396,7 @@ def handle_onboarding_ai(
                 age_display = f"{collected['age_years']} лет"
 
             pet_card = {
+                "id": pet_id,
                 "name": collected.get("pet_name") or "Питомец",
                 "species": species_display,
                 "breed": collected.get("breed") or "—",
@@ -367,11 +406,8 @@ def handle_onboarding_ai(
                 "avatar_url": None,
             }
 
-    # 13. Detect input_type from quick_replies or message content
+    # 13. input_type — camera is now triggered by explicit quick reply buttons only
     input_type = "text"
-    ai_text_lower = ai_text.lower()
-    if any(w in ai_text_lower for w in ["фото", "паспорт", "снимок", "сфотографируй"]):
-        input_type = "image"
 
     # 14. Save AI response to chat
     _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
