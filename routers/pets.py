@@ -7,6 +7,7 @@ from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from schemas.pet import PetCreate, PetUpdate
 from dependencies.auth import get_current_user, verify_pet_owner
 from dependencies.limiter import limiter
+from routers.services.breeds import BREED_EN
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,10 @@ def get_pet_by_id(pet_id: str, request: Request = None, current_user: dict = Dep
     if not result.data:
         return JSONResponse(status_code=404, content={"error": "pet not found"})
 
-    return result.data
+    pet = result.data
+    breed = pet.get("breed") or ""
+    pet["breed_en"] = BREED_EN.get(breed, breed or None)
+    return pet
 
 
 @router.patch("/pet/{pet_id}")

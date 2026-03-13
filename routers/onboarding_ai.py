@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from routers.services.breeds import BREED_EN
 from routers.services.memory import get_user_flags, update_user_flags
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ _EMPTY_COLLECTED = {
     "is_neutered": None,
     "color": None,
     "goal": None,
+    "avatar_url": None,
 }
 
 
@@ -125,6 +127,7 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             "birth_date": birth_date,
             "age_years": age_years,
             "color": collected.get("color"),
+            "avatar_url": collected.get("avatar_url"),
         }
     except Exception as e:
         logger.error("[create_pet] build row failed: %s", e)
@@ -264,16 +267,11 @@ def handle_onboarding_ai(
             else:
                 actual_message = breed_text
 
-    # 2c. Handle avatar_url from message text
+    # 2c. Handle avatar_url from message text — save to collected for _create_pet()
     if message_text and message_text.startswith("avatar_url:"):
         avatar_url = message_text[len("avatar_url:"):]
-        # Find pet_id from flags or recent pet
-        onboarding_pet_id = user_flags.get("onboarding_pet_id")
-        if onboarding_pet_id and avatar_url:
-            try:
-                supabase.table("pets").update({"avatar_url": avatar_url}).eq("id", onboarding_pet_id).execute()
-            except Exception as e:
-                logger.error("[avatar_url] UPDATE pets failed: %s", e)
+        if avatar_url:
+            collected["avatar_url"] = avatar_url
         actual_message = "Фото загружено"
 
     # 3. Save user message (skip empty WELCOME ping)
@@ -400,10 +398,11 @@ def handle_onboarding_ai(
                 "name": collected.get("pet_name") or "Питомец",
                 "species": species_display,
                 "breed": collected.get("breed") or "—",
+                "breed_en": BREED_EN.get(collected.get("breed") or "", collected.get("breed") or "—"),
                 "gender": gender_display,
                 "age": age_display,
                 "neutered": neutered_display,
-                "avatar_url": None,
+                "avatar_url": collected.get("avatar_url"),
             }
 
     # 13. input_type — camera is now triggered by explicit quick reply buttons only
