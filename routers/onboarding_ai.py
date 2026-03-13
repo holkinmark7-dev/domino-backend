@@ -73,6 +73,11 @@ def _merge_collected(existing: dict, new_fields: dict) -> dict:
     merged = dict(existing)
     for key, val in new_fields.items():
         if val is not None and val != "null":
+            existing_val = merged.get(key)
+            # Защита от дублирования: "ЖабликЖаблик" не заменит "Жаблик"
+            if existing_val and isinstance(val, str) and isinstance(existing_val, str):
+                if existing_val in val and val != existing_val:
+                    continue  # пропустить — это дубль
             merged[key] = val
     return merged
 
@@ -337,6 +342,10 @@ def handle_onboarding_ai(
     quick_replies = parsed.get("quick_replies") or []
     new_collected = parsed.get("collected") or {}
     status = parsed.get("status", "collecting")
+
+    # Gemini сказал complete — проверяем сами
+    if status == "complete" and not _is_complete(collected):
+        status = "collecting"  # не верим Gemini — поля не заполнены
 
     # 9. Merge collected fields
     collected = _merge_collected(collected, new_collected)
