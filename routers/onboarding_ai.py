@@ -126,27 +126,38 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
             "age_years": age_years,
             "color": collected.get("color"),
         }
-        result = supabase.table("pets").insert(row).execute()
-        if result.data:
-            pet_id = result.data[0]["id"]
-
-            # UPDATE users: is_onboarded, onboarding_stage, pet_count, owner_name
-            user_resp = supabase.table("users").select("pet_count").eq("id", user_id).single().execute()
-            current_count = (user_resp.data or {}).get("pet_count") or 0
-            supabase.table("users").update({
-                "is_onboarded": True,
-                "onboarding_stage": "complete",
-                "owner_name": collected.get("owner_name"),
-                "pet_count": current_count + 1,
-            }).eq("id", user_id).execute()
-
-            # UPDATE chat: link onboarding history to new pet
-            supabase.table("chat").update({"pet_id": pet_id}).eq("user_id", user_id).is_("pet_id", "null").execute()
-
-            return pet_id
     except Exception as e:
-        logger.error("[create_pet] %s", e)
-    return None
+        logger.error("[create_pet] build row failed: %s", e)
+        return None
+
+    # Block 1 — create pet
+    try:
+        result = supabase.table("pets").insert(row).execute()
+        pet_id = result.data[0]["id"]
+    except Exception as e:
+        logger.error("[create_pet] INSERT pets failed: %s", e)
+        return None
+
+    # Block 2 — update user (independent, pet_id already exists)
+    try:
+        current = supabase.table("users").select("pet_count").eq("id", user_id).single().execute()
+        count = (current.data.get("pet_count") or 0) + 1
+        supabase.table("users").update({
+            "is_onboarded": True,
+            "onboarding_stage": "complete",
+            "owner_name": collected.get("owner_name"),
+            "pet_count": count,
+        }).eq("id", user_id).execute()
+    except Exception as e:
+        logger.error("[create_pet] UPDATE users failed: %s", e)
+
+    # Block 3 — link onboarding chat history to new pet
+    try:
+        supabase.table("chat").update({"pet_id": pet_id}).eq("user_id", user_id).is_("pet_id", "null").execute()
+    except Exception as e:
+        logger.error("[create_pet] UPDATE chat failed: %s", e)
+
+    return pet_id
 
 
 def _load_chat_history(user_id: str, limit: int = 20) -> list[dict]:
