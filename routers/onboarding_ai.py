@@ -399,7 +399,6 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
         count = (current.data.get("pet_count") or 0) + 1
         supabase.table("users").update({
             "is_onboarded": True,
-            "onboarding_stage": "complete",
             "owner_name": collected.get("owner_name"),
             "pet_count": count,
         }).eq("id", user_id).execute()
