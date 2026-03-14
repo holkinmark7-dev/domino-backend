@@ -8,10 +8,13 @@ import pytest
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _gemini_response(payload: dict) -> MagicMock:
-    """Create a mock Gemini send_message response."""
+def _gemini_response(payload) -> MagicMock:
+    """Create a mock Gemini send_message response (accepts str or dict)."""
     mock = MagicMock()
-    mock.text = json.dumps(payload, ensure_ascii=False)
+    if isinstance(payload, str):
+        mock.text = payload
+    else:
+        mock.text = json.dumps(payload, ensure_ascii=False)
     return mock
 
 
@@ -71,32 +74,20 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
 # ── Test 1: Welcome ping returns greeting ────────────────────────────────────
 
 def test_welcome_ping_returns_greeting():
-    resp = _run("", gemini_payload={
-        "text": "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?",
-        "quick_replies": [],
-        "collected": {},
-        "status": "collecting",
-    })
+    resp = _run("", gemini_payload="Привет. Я Dominik — рад что ты здесь. Как тебя зовут?")
     assert resp["ai_response"] == "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?"
     assert resp["onboarding_phase"] == "collecting"
     assert resp["pet_id"] is None
 
 
-# ── Test 2: Gemini returns quick_replies as objects ──────────────────────────
+# ── Test 2: Backend generates quick_replies for goal step ────────────────────
 
 def test_quick_replies_format():
-    resp = _run("Марк", gemini_payload={
-        "text": "Кошка или собака?",
-        "quick_replies": [
-            {"label": "Кот", "value": "Кот", "preferred": False},
-            {"label": "Кошка", "value": "Кошка", "preferred": False},
-            {"label": "Собака", "value": "Собака", "preferred": False},
-        ],
-        "collected": {"owner_name": "Марк"},
-        "status": "collecting",
-    })
-    assert len(resp["quick_replies"]) == 3
-    assert resp["quick_replies"][0]["label"] == "Кот"
+    """After owner_name+pet_name filled, step=goal → 4 backend-generated QR buttons."""
+    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс"},
+                gemini_payload="Рексу повезло. Чем могу помочь?")
+    assert len(resp["quick_replies"]) == 4
+    assert resp["quick_replies"][0]["label"] == "Слежу за здоровьем"
     assert "value" in resp["quick_replies"][0]
     assert "preferred" in resp["quick_replies"][0]
 
@@ -305,7 +296,7 @@ def test_passport_ocr_low_confidence():
         mock_genai.Client.return_value = mock_client
         handle_onboarding_ai("user-1", "", passport_ocr_data=ocr_bad)
 
-    assert "__passport_ocr_failed__" in sent_messages
+    assert any("не удалось" in str(m).lower() or "вручную" in str(m).lower() for m in sent_messages)
 
 
 # ── Test 10: Gemini API error returns fallback message ───────────────────────
