@@ -57,7 +57,7 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
         patch(_PATCH_HISTORY, return_value=[]),
         patch(_PATCH_SAVE_USER, return_value="msg-id-1"),
         patch(_PATCH_SAVE_AI),
-        patch(_PATCH_CREATE_PET, return_value="pet-uuid-1"),
+        patch(_PATCH_CREATE_PET, return_value=("pet-uuid-1", 1)),
         patch(_PATCH_GENAI) as mock_genai,
     ):
         mock_genai.Client.return_value = mock_client

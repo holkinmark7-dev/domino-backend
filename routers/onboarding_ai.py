@@ -366,17 +366,6 @@ def _get_step_instruction(step: str, collected: dict) -> str:
             f'ПРИМЕР: "Ретриверы бывают разные — уточни:"'
         ),
 
-        "breed_insight": (
-            f'Дай живой инсайт про породу {collected.get("breed", "питомца")}. '
-            f'Одно-два предложения про характер или главную особенность породы. '
-            f'Никаких медицинских предупреждений. Живо, как друг который знает эту породу. '
-            f'После инсайта — не задавай вопросов. Следующий вопрос придёт отдельно. '
-            f'Примеры стиля: '
-            f'"Лабрадоры едят за троих и искренне не понимают зачем им ограничивают порцию." '
-            f'"Золотистые — вечные щенки душой. Суставы у них слабое место с возрастом." '
-            f'"Немецкие овчарки умны до неудобства — если скучно, найдут себе занятие."'
-        ),
-
         "birth_date": (
             (
                 f'РАЗРЕШЕНО: сначала дай инсайт про породу {collected.get("breed", "")}, '
@@ -905,8 +894,8 @@ def _parse_user_input(message: str, step: str, collected: dict, client=None) -> 
 
 # ── Pet creation ─────────────────────────────────────────────────────────────
 
-def _create_pet(user_id: str, collected: dict) -> str | None:
-    """Create pet in supabase from collected data. Returns pet_id or None."""
+def _create_pet(user_id: str, collected: dict) -> tuple[str, int | None] | None:
+    """Create pet in supabase from collected data. Returns (pet_id, short_id) or None."""
     try:
         species_raw = (collected.get("species") or "").lower()
         if "cat" in species_raw or "кош" in species_raw or "кот" in species_raw:
@@ -957,6 +946,7 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
     try:
         result = supabase.table("pets").insert(row).execute()
         pet_id = result.data[0]["id"]
+        short_id = result.data[0].get("short_id")
     except Exception as e:
         logger.error("[create_pet] INSERT pets failed: %s", e)
         return None
@@ -979,7 +969,7 @@ def _create_pet(user_id: str, collected: dict) -> str | None:
     except Exception as e:
         logger.error("[create_pet] UPDATE chat failed: %s", e)
 
-    return pet_id
+    return pet_id, short_id
 
 
 # ── Chat persistence ────────────────────────────────────────────────────────
@@ -1035,7 +1025,7 @@ def _save_user_message(user_id: str, text: str) -> str | None:
 
 # ── Pet card & completion text ───────────────────────────────────────────────
 
-def _build_pet_card(collected: dict, pet_id: str) -> dict:
+def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -> dict:
     """Build pet card dict for UI response."""
     species_raw = (collected.get("species") or "").lower()
     species_display = "Кошка" if "cat" in species_raw or "кош" in species_raw or "кот" in species_raw else "Собака"
@@ -1072,6 +1062,7 @@ def _build_pet_card(collected: dict, pet_id: str) -> dict:
 
     return {
         "id": pet_id,
+        "short_id": short_id,
         "name": collected.get("pet_name") or "Питомец",
         "species": species_display,
         "breed": collected.get("breed") or "—",
@@ -1210,13 +1201,14 @@ def handle_onboarding_ai(
 
     # 6. Check completion — early return without Gemini
     if current_step == "complete" or _is_complete(collected):
-        pet_id = _create_pet(user_id, collected)
-        if pet_id:
+        create_result = _create_pet(user_id, collected)
+        if create_result:
+            pet_id, short_id = create_result
             user_flags["onboarding_collected"] = None
             user_flags["onboarding_pet_id"] = pet_id
             update_user_flags(user_id, user_flags)
 
-            pet_card = _build_pet_card(collected, pet_id)
+            pet_card = _build_pet_card(collected, pet_id, short_id)
             ai_text = _build_completion_text(collected)
             _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
 
