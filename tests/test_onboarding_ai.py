@@ -154,6 +154,7 @@ def test_complete_creates_pet():
         "gender": "male",
         "is_neutered": "Да",
         "goal": "Слежу за здоровьем",
+        "_avatar_skipped": True,
     }
     resp = _run("Нет, не кастрирован", collected=full_collected, gemini_payload={
         "text": "Карточка Рекса готова.",
@@ -168,7 +169,7 @@ def test_complete_creates_pet():
 # ── Test 6: Completion auto-detected from collected fields ───────────────────
 
 def test_completion_auto_detected():
-    """If Gemini returns status=collecting but all fields filled → force complete."""
+    """If all fields filled + avatar skipped → _get_current_step returns complete."""
     full = {
         "owner_name": "Аня",
         "pet_name": "Мурка",
@@ -178,6 +179,7 @@ def test_completion_auto_detected():
         "gender": "female",
         "is_neutered": "Да",
         "goal": "Прививки и плановое",
+        "_avatar_skipped": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Мурка стерилизована.",
@@ -201,6 +203,7 @@ def test_pet_card_on_completion():
         "gender": "самец",
         "is_neutered": "Да",
         "goal": "Слежу за здоровьем",
+        "_avatar_skipped": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Карточка готова.",

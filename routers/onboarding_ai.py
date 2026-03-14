@@ -37,10 +37,6 @@ try:
 except FileNotFoundError:
     raise RuntimeError(f"[onboarding_ai] Характер не найден: {_CHARACTER_PATH}")
 
-# Fields to collect (for completion check)
-_REQUIRED_FIELDS = {"owner_name", "pet_name", "species", "breed", "gender", "is_neutered", "goal"}
-_AGE_FIELDS = {"age_years", "birth_date"}
-
 # Empty collected state
 _EMPTY_COLLECTED = {
     "owner_name": None,
@@ -198,13 +194,6 @@ def _safe_update(existing: dict, new_fields: dict) -> dict:
                     continue
             merged[key] = val
     return merged
-
-
-def _is_complete(collected: dict) -> bool:
-    """Check if all required fields plus at least one age field are filled."""
-    required_ok = all(collected.get(f) for f in _REQUIRED_FIELDS)
-    age_ok = any(collected.get(f) for f in _AGE_FIELDS)
-    return required_ok and age_ok
 
 
 def _get_fallback_text(step: str, collected: dict) -> str:
@@ -441,10 +430,12 @@ def _get_step_instruction(step: str, collected: dict) -> str:
         ),
 
         "avatar": (
-            f'РАЗРЕШЕНО: попросить фото для профиля {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: подводить итоги онбординга, говорить что карточка готова.\n'
+            f'РАЗРЕШЕНО: попросить фото питомца для профиля. Сказать что это последний штрих.\n'
+            f'ЗАПРЕЩЕНО: говорить что карточка готова, подводить итоги онбординга.\n'
+            f'ЗАПРЕЩЕНО: упоминать что будет после фото.\n'
             f'МАКСИМУМ: 2 предложения.\n'
-            f'ПРИМЕР: "Последний штрих — фото для профиля. Можно сфотографировать или пропустить."'
+            f'ПРИМЕР ТОЧНОГО ТЕКСТА: "Последний штрих — фото {pet_name} для профиля. '
+            f'Сфотографируй сейчас или пропусти — добавить можно будет позже."'
         ),
     }
 
@@ -1225,7 +1216,6 @@ def handle_onboarding_ai(
 
     # 3. Parse user input (text messages only, not special inputs)
     current_step = _get_current_step(collected)
-    prev_step = current_step
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
     client = genai.Client(api_key=api_key)
@@ -1234,13 +1224,6 @@ def handle_onboarding_ai(
         updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
         current_step = _get_current_step(collected)
-
-    # Защита: после is_neutered принудительно идём на avatar если не заполнен
-    if (prev_step == "is_neutered" and
-        collected.get("is_neutered") is not None and
-        not collected.get("avatar_url") and
-        not collected.get("_avatar_skipped")):
-        current_step = "avatar"
 
     # 4. Save user message
     user_chat_id = None
@@ -1252,7 +1235,7 @@ def handle_onboarding_ai(
     update_user_flags(user_id, user_flags)
 
     # 6. Check completion — early return without Gemini
-    if current_step == "complete" or _is_complete(collected):
+    if current_step == "complete":
         create_result = _create_pet(user_id, collected)
         if create_result:
             pet_id, short_id = create_result
