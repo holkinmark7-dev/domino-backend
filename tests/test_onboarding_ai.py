@@ -83,8 +83,8 @@ def test_welcome_ping_returns_greeting():
 # ── Test 2: Backend generates quick_replies for goal step ────────────────────
 
 def test_quick_replies_format():
-    """After owner_name+pet_name filled, step=goal → 4 backend-generated QR buttons."""
-    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс"},
+    """After owner_name+pet_name+species filled, step=goal → 4 backend-generated QR buttons."""
+    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс", "_species_guessed": True},
                 gemini_payload="Рексу повезло. Чем могу помочь?")
     assert len(resp["quick_replies"]) == 4
     assert resp["quick_replies"][0]["label"] == "Слежу за здоровьем"

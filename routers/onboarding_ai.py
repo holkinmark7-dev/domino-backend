@@ -55,6 +55,34 @@ _EMPTY_COLLECTED = {
     "avatar_url": None,
 }
 
+# Явные собачьи клички (минимальный точный список)
+_DOG_NAMES = {
+    "рекс", "шарик", "бобик", "тузик", "барон", "граф", "буян",
+    "полкан", "пират", "дружок", "жучка", "белка", "найда", "пальма",
+}
+
+# Явные кошачьи клички (минимальный точный список)
+_CAT_NAMES = {
+    "мурка", "барсик", "рыжик", "пушок", "васька", "мурзик",
+    "китти", "мяу", "снежок", "уголёк", "тигр", "леопард",
+}
+
+# Категории пород для уточнения
+_BREED_CATEGORIES = {
+    "ретривер": "ретривер",
+    "овчарка": "овчарка",
+    "немецкая": "овчарка",
+    "терьер": "терьер",
+    "йорк": "терьер",
+    "спаниель": "спаниель",
+    "кокер": "спаниель",
+    "хаски": "хаски",
+    "маламут": "хаски",
+    "бульдог": "бульдог",
+    "шотландская": "шотландская",
+    "вислоухая": "шотландская",
+}
+
 
 # ── System prompt builder ────────────────────────────────────────────────────
 
@@ -97,97 +125,158 @@ def _get_current_step(collected: dict) -> str:
     """Determine current step based on collected data."""
     if not collected.get("owner_name"):
         return "owner_name"
+
     if not collected.get("pet_name"):
         return "pet_name"
+
+    # Угадывание вида из клички — СРАЗУ после pet_name
+    if not collected.get("species") and not collected.get("_species_guessed"):
+        name = (collected.get("pet_name") or "").lower().strip()
+        if name in _DOG_NAMES:
+            return "species_guess_dog"
+        elif name in _CAT_NAMES:
+            return "species_guess_cat"
+
     if not collected.get("goal"):
         return "goal"
+
+    # Если была тревога — дать высказаться
+    if collected.get("goal") == "Есть тревога" and not collected.get("_concern_heard"):
+        return "concern"
+
     if not collected.get("species"):
         return "species"
-    if not collected.get("breed"):
-        if collected.get("_passport_skipped") or collected.get("birth_date"):
-            return "breed"
+
+    # Паспорт — только если не пропущен и нет breed
+    if not collected.get("breed") and not collected.get("_passport_skipped"):
         return "passport_offer"
-    if not collected.get("birth_date") and not collected.get("age_years"):
+
+    # Порода
+    if not collected.get("breed"):
+        if collected.get("_breed_category"):
+            return "breed_subcategory"
+        return "breed"
+
+    # Дата/возраст
+    if not collected.get("birth_date") and not collected.get("age_years") and not collected.get("_age_skipped"):
         return "birth_date"
+
+    # Пол — пропускаем если уже определён (кот/кошка)
     if not collected.get("gender"):
         return "gender"
-    if collected.get("is_neutered") is None:
+
+    if collected.get("is_neutered") is None and not collected.get("_neutered_skipped"):
         return "is_neutered"
+
     if not collected.get("avatar_url") and not collected.get("_avatar_skipped"):
         return "avatar"
+
     return "complete"
 
 
 def _get_step_instruction(step: str, collected: dict) -> str:
     """Return Gemini instruction for a specific step."""
-    pet = collected.get("pet_name") or "питомец"
-    owner = collected.get("owner_name") or ""
+    owner = collected.get("owner_name") or "хозяин"
     species = collected.get("species") or ""
     gender = collected.get("gender") or ""
 
+    # Определяем форму слова для кастрации
+    if species == "cat" and gender == "female":
+        neutered_word = "стерилизована"
+    elif species == "dog" and gender == "female":
+        neutered_word = "стерилизована"
+    else:
+        neutered_word = "кастрирован"
+
     instructions = {
         "owner_name":
-            'Поприветствуй тепло и спроси имя пользователя. '
+            'Поприветствуй тепло и коротко. Спроси имя пользователя. '
+            'НЕ упоминай ветеринарию. '
             'Пример: "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?"',
 
         "pet_name":
             f'Поприветствуй {owner} и спроси кличку питомца. '
             f'Пример: "Приятно, {owner}. Как зовут твоего питомца?"',
 
+        "species_guess_dog":
+            'Угадай что питомец — собака. Спроси подтверждение. '
+            'Пример: "Ставлю на собаку — угадал?" '
+            'НЕ называй кличку в этом сообщении.',
+
+        "species_guess_cat":
+            'Угадай что питомец — кот или кошка. Спроси подтверждение. '
+            'Пример: "Ставлю на кота — угадал?" '
+            'НЕ называй кличку в этом сообщении.',
+
         "goal":
-            f'Скажи что {pet} повезло что у него есть хозяин. '
-            f'Спроси чем можешь помочь. '
-            f'Пример: "{pet}у повезло — у него есть ты. Чем могу помочь?"',
+            'Скажи что питомцу повезло — используй кличку из контекста в дательном падеже. '
+            'Спроси чем можешь помочь. '
+            'НЕ дублируй кличку — используй её один раз.',
+
+        "concern":
+            'Пользователь беспокоится о питомце. Спроси что происходит — '
+            'используй кличку из контекста в творительном падеже. '
+            'Дай высказаться. Не торопи. '
+            'Пример: "Расскажи. Что происходит?"',
 
         "species":
-            'Спроси кошка или собака. '
+            'Спроси кошка или собака. Коротко. '
             'Пример: "Кошка или собака?"',
 
         "passport_offer":
-            f'Предложи сфотографировать ветпаспорт {pet}а. '
-            f'Объясни что сам перенесёшь все данные. '
-            f'Пример: "Если есть ветпаспорт — просто сфотографируй. Сам всё перенесу в карточку."',
+            'Предложи сфотографировать ветпаспорт. Объясни что сам перенесёшь данные. '
+            'Пример: "Если есть ветпаспорт — просто сфотографируй. Сам всё перенесу в карточку."',
 
         "breed":
-            f'Спроси породу {pet}а. Если собака — упомяни что метис тоже хорошо. '
-            f'Если кошка — что беспородная тоже хорошо.',
+            'Предложи определить породу по фото. Скажи что заодно запишешь окрас. '
+            'Используй кличку из контекста в родительном падеже. '
+            'Пример: "Могу определить породу по фото — просто сфотографируй питомца. Заодно запишу окрас."',
+
+        "breed_subcategory":
+            'Уточни подпороду. Скажи что бывают разные. '
+            'Пример: "Овчарки бывают разные — уточни:"',
 
         "birth_date":
-            f'Объясни зачем нужна дата рождения (для точного расчёта прививок). '
-            f'Спроси когда родился {pet}.',
+            'Объясни зачем нужна дата рождения — для точного расчёта прививок. '
+            'Спроси когда родился питомец — используй кличку из контекста. '
+            'Пример: "Дата рождения нужна — чтобы считать прививки точно. Когда родился?"',
 
         "gender":
-            f'Спроси пол {pet}а. Если имя явно мужское — уточни "мальчик?". '
-            f'Если женское — "девочка?". Если непонятно — спроси прямо.',
+            'Спроси пол питомца. Используй кличку из контекста. '
+            'Если кличка явно мужская — спроси подтверждение "мальчик?". '
+            'Если женская — "девочка?". Если непонятно — спроси прямо.',
 
         "is_neutered":
-            f'Спроси кастрирован ли {pet}. '
-            f'Используй правильную форму: кот→кастрирован, кошка→стерилизована, '
-            f'пёс→кастрирован, собака→стерилизована.',
+            f'Спроси {neutered_word} ли питомец. '
+            'Используй кличку из контекста. '
+            'Пример для кота: "кастрирован?" Для кошки: "стерилизована?"',
 
         "avatar":
-            f'Попроси фото {pet}а для профиля. Скажи что это последний штрих. '
-            f'Пример: "Последний штрих — фото {pet}а. Мордашка для профиля."',
+            'Попроси фото питомца для профиля. Скажи что это последний штрих. '
+            'Используй кличку из контекста. '
+            'Пример: "Последний штрих — фото для профиля. Мордашка питомца."',
     }
-    return instructions.get(step, "Продолжи разговор.")
+
+    return instructions.get(step, "Продолжи разговор естественно.")
 
 
 def _get_gender_quick_replies(pet_name: str) -> list:
     """Determine gender buttons based on pet name heuristic."""
-    male_names = {"рекс", "шарик", "бобик", "тузик", "бублик", "марс", "зевс", "барон"}
-    female_names = {"мурка", "белка", "рыжик", "ласка", "роза", "луна", "зара"}
     name_lower = (pet_name or "").lower()
 
-    if name_lower in male_names:
-        return [
-            {"label": "Да, мальчик", "value": "Да", "preferred": True},
-            {"label": "Нет, девочка", "value": "Нет, девочка", "preferred": False},
-        ]
-    elif name_lower in female_names:
-        return [
-            {"label": "Да, девочка", "value": "Да", "preferred": True},
-            {"label": "Нет, мальчик", "value": "Нет, мальчик", "preferred": False},
-        ]
+    if name_lower in _DOG_NAMES or name_lower in _CAT_NAMES:
+        # Известная кличка — предлагаем с preferred
+        is_male = name_lower in _DOG_NAMES
+        if is_male:
+            return [
+                {"label": "Да, мальчик", "value": "Да", "preferred": True},
+                {"label": "Нет, девочка", "value": "Нет, девочка", "preferred": False},
+            ]
+        else:
+            return [
+                {"label": "Да, девочка", "value": "Да", "preferred": True},
+                {"label": "Нет, мальчик", "value": "Нет, мальчик", "preferred": False},
+            ]
     else:
         return [
             {"label": "Мальчик", "value": "Мальчик", "preferred": False},
@@ -195,14 +284,43 @@ def _get_gender_quick_replies(pet_name: str) -> list:
         ]
 
 
+def _get_breed_subcategory_buttons(category: str) -> list:
+    """Кнопки уточнения категории породы."""
+    subcategories = {
+        "ретривер": ["Золотистый ретривер", "Лабрадор-ретривер", "Плоскошёрстный ретривер", "Другая"],
+        "овчарка": ["Немецкая овчарка", "Бельгийская малинуа", "Австралийская овчарка", "Бордер-колли", "Другая"],
+        "терьер": ["Йоркширский терьер", "Джек-рассел", "Бультерьер", "Другая"],
+        "спаниель": ["Кокер-спаниель", "Спрингер-спаниель", "Кавалер кинг чарльз", "Другая"],
+        "хаски": ["Сибирский хаски", "Аляскинский маламут", "Другая"],
+        "бульдог": ["Английский бульдог", "Французский бульдог", "Американский бульдог", "Другая"],
+        "шотландская": ["Шотландская вислоухая", "Шотландская прямоухая", "Другая"],
+    }
+    breeds = subcategories.get(category.lower(), [])
+    return [
+        {"label": b, "value": b if b != "Другая" else "Другая порода", "preferred": False}
+        for b in breeds
+    ]
+
+
 def _get_step_quick_replies(step: str, collected: dict) -> list:
     """Return quick reply buttons for a specific step. Backend-controlled, not Gemini."""
     pet = collected.get("pet_name") or ""
 
-    qr = {
+    qr_map = {
         "owner_name": [],
 
         "pet_name": [],
+
+        "species_guess_dog": [
+            {"label": "Да, пёс", "value": "Да, пёс", "preferred": True},
+            {"label": "Не угадал", "value": "Не угадал", "preferred": False},
+        ],
+
+        "species_guess_cat": [
+            {"label": "Кот", "value": "Кот", "preferred": True},
+            {"label": "Кошка", "value": "Кошка", "preferred": False},
+            {"label": "Не угадал", "value": "Не угадал", "preferred": False},
+        ],
 
         "goal": [
             {"label": "Слежу за здоровьем", "value": "Слежу за здоровьем", "preferred": False},
@@ -210,6 +328,8 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
             {"label": "Веду дневник", "value": "Веду дневник", "preferred": False},
             {"label": "Кое-что беспокоит", "value": "Кое-что беспокоит", "preferred": False},
         ],
+
+        "concern": [],
 
         "species": [
             {"label": "Кот", "value": "Кот", "preferred": False},
@@ -229,7 +349,13 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
             {"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False},
         ],
 
-        "birth_date": [],
+        "breed_subcategory": [],
+
+        "birth_date": [
+            {"label": "Знаю дату", "value": "Знаю дату", "preferred": True},
+            {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
+            {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
+        ],
 
         "gender": _get_gender_quick_replies(pet),
 
@@ -243,21 +369,48 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
             {"label": "Пропустить", "value": "Пропустить", "preferred": False},
         ],
     }
-    return qr.get(step, [])
+
+    # Динамические кнопки для подкатегорий пород
+    if step == "breed_subcategory":
+        category = collected.get("_breed_category", "")
+        return _get_breed_subcategory_buttons(category)
+
+    return qr_map.get(step, [])
 
 
 # ── User input parser (no Gemini) ───────────────────────────────────────────
 
 def _parse_user_input(message: str, step: str, collected: dict) -> dict:
     """Extract data from user message without Gemini. Returns dict with updated fields."""
-    msg = message.strip().lower()
+    msg = message.strip()
+    msg_lower = msg.lower()
     updates = {}
 
     if step == "owner_name":
-        updates["owner_name"] = message.strip()
+        updates["owner_name"] = msg
 
     elif step == "pet_name":
-        updates["pet_name"] = message.strip()
+        updates["pet_name"] = msg
+
+    elif step == "species_guess_dog":
+        if any(w in msg_lower for w in ["да", "пёс", "пес", "собака"]):
+            updates["species"] = "dog"
+            updates["_species_guessed"] = True
+        else:
+            # "Не угадал" → переходим к goal без species
+            updates["_species_guessed"] = True
+
+    elif step == "species_guess_cat":
+        if "кот" in msg_lower and "кошка" not in msg_lower:
+            updates["species"] = "cat"
+            updates["gender"] = "male"
+            updates["_species_guessed"] = True
+        elif "кошка" in msg_lower:
+            updates["species"] = "cat"
+            updates["gender"] = "female"
+            updates["_species_guessed"] = True
+        else:
+            updates["_species_guessed"] = True
 
     elif step == "goal":
         goal_map = {
@@ -267,69 +420,101 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
             "кое-что беспокоит": "Есть тревога",
         }
         for key, val in goal_map.items():
-            if key in msg:
+            if key in msg_lower:
                 updates["goal"] = val
                 break
-        if not updates:
-            updates["goal"] = message.strip()
+        if not updates.get("goal"):
+            updates["goal"] = msg
+
+    elif step == "concern":
+        # Пользователь рассказал о проблеме
+        updates["_concern_heard"] = True
 
     elif step == "species":
-        if "кот" in msg and "кошка" not in msg:
+        if "кот" in msg_lower and "кошка" not in msg_lower:
             updates["species"] = "cat"
             updates["gender"] = "male"
-        elif "кошка" in msg:
+        elif "кошка" in msg_lower:
             updates["species"] = "cat"
             updates["gender"] = "female"
-        elif "собака" in msg or "пёс" in msg or "пес" in msg:
+        elif any(w in msg_lower for w in ["собака", "пёс", "пес"]):
             updates["species"] = "dog"
 
     elif step == "passport_offer":
-        if any(w in msg for w in ["заполню", "сам", "нет", "паспорта нет"]):
+        if any(w in msg_lower for w in ["заполню", "сам", "нет", "паспорта нет", "вручную"]):
             updates["_passport_skipped"] = True
 
     elif step == "breed":
-        if msg not in ["знаю породу", "не знаю породу", "breed_photo"]:
-            if "не знаю" in msg or "метис" in msg or "дворняга" in msg or "беспородн" in msg:
+        if msg_lower in ["знаю породу", "не знаю породу", "breed_photo"]:
+            if "не знаю" in msg_lower:
                 updates["breed"] = "Метис"
+            # "Знаю породу" и "BREED_PHOTO" — ничего не пишем, ждём следующего ввода
+        else:
+            # Пользователь написал породу или категорию
+            category = None
+            for key, cat in _BREED_CATEGORIES.items():
+                if key in msg_lower:
+                    category = cat
+                    break
+
+            if category:
+                # Это категория — нужно уточнение
+                updates["_breed_category"] = category
             else:
-                updates["breed"] = message.strip()
+                if "не знаю" in msg_lower or "метис" in msg_lower or "дворняга" in msg_lower or "беспородн" in msg_lower:
+                    updates["breed"] = "Метис"
+                else:
+                    updates["breed"] = msg
+                updates["_breed_category"] = None
+
+    elif step == "breed_subcategory":
+        if "другая" in msg_lower:
+            updates["_breed_category"] = "other"
+            # Ждём ввода текстом
+        else:
+            updates["breed"] = msg
+            updates["_breed_category"] = None
 
     elif step == "birth_date":
-        # Format DD.MM.YYYY or DD/MM/YYYY
-        match = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', message)
-        if match:
-            d, m, y = match.groups()
-            updates["birth_date"] = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
-        elif "не знаю" in msg or "незнаю" in msg:
-            pass  # backend will ask for approximate age
+        if "знаю дату" in msg_lower:
+            pass  # DatePicker откроется на фронте
+        elif "не знаю" in msg_lower or "незнаю" in msg_lower:
+            updates["_age_skipped"] = True
+        elif "примерный" in msg_lower or "примерно" in msg_lower:
+            pass  # ждём следующего ввода с числом
         else:
-            # Try to find age in years
-            age_match = re.search(r'(\d+)\s*(лет|год|года)', msg)
-            if age_match:
-                updates["age_years"] = float(age_match.group(1))
-            # Try months
-            month_match = re.search(r'(\d+)\s*(месяц|мес)', msg)
-            if month_match:
-                updates["age_years"] = round(float(month_match.group(1)) / 12, 1)
+            # DD.MM.YYYY или DD/MM/YYYY
+            match = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', msg)
+            if match:
+                d, m, y = match.groups()
+                updates["birth_date"] = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+            else:
+                # X лет / X месяцев
+                age_match = re.search(r'(\d+)\s*(лет|год|года|месяц|месяца|месяцев)', msg_lower)
+                if age_match:
+                    num = float(age_match.group(1))
+                    unit = age_match.group(2)
+                    if "месяц" in unit:
+                        updates["age_years"] = round(num / 12, 1)
+                    else:
+                        updates["age_years"] = num
 
     elif step == "gender":
-        if any(w in msg for w in ["мальчик", "самец", "male"]):
+        if any(w in msg_lower for w in ["мальчик", "самец", "пёс"]):
             updates["gender"] = "male"
-        elif any(w in msg for w in ["девочка", "самка", "female"]):
+        elif any(w in msg_lower for w in ["девочка", "самка"]):
             updates["gender"] = "female"
-        elif msg == "да" and collected.get("gender"):
-            pass  # confirm existing guess — gender already set
-        elif msg == "да":
-            updates["gender"] = "male"  # default confirm
+        elif "да" in msg_lower:
+            updates["gender"] = "male"  # дефолт
 
     elif step == "is_neutered":
-        if msg in {"да", "yes", "кастрирован", "стерилизована", "стерилизован"}:
+        if msg_lower in {"да", "yes", "кастрирован", "стерилизована", "кастрирован."}:
             updates["is_neutered"] = True
-        elif msg in {"нет", "no"}:
+        elif msg_lower in {"нет", "no", "не кастрирован", "не стерилизована"}:
             updates["is_neutered"] = False
 
     elif step == "avatar":
-        if "пропуст" in msg:
+        if "пропуст" in msg_lower:
             updates["_avatar_skipped"] = True
 
     return updates
@@ -517,17 +702,20 @@ def _build_pet_card(collected: dict, pet_id: str) -> dict:
 
 def _build_completion_text(collected: dict) -> str:
     """Generate completion text based on goal. No Gemini needed."""
+    goal = collected.get("goal", "")
     pet = collected.get("pet_name") or "питомец"
-    goal = (collected.get("goal") or "").lower()
 
-    if "тревог" in goal or "беспокоит" in goal:
-        return f"Карточка готова. Теперь расскажи — что тебя беспокоит?"
-    elif "прививк" in goal or "плановое" in goal:
-        return f"Профиль {pet} создан. Загляни — там уже основное. Остальное внесём вместе."
-    elif "дневник" in goal:
-        return f"Карточка {pet} готова. Открой профиль и дополни что знаешь, или просто пиши мне."
-    else:
-        return f"Профиль {pet} готов. Дополнить можно в любой момент — сам или через меня."
+    texts = {
+        "Есть тревога":
+            f"Карточка готова. Профиль {pet} уже заполнен — но сначала расскажи, что тебя беспокоит?",
+        "Слежу за здоровьем":
+            f"Всё на месте. Открой профиль {pet} — там уже всё что ты рассказал. Дополнить можно в любой момент.",
+        "Прививки и плановое":
+            f"Готово. Профиль {pet} создан — загляни туда, там уже основное. Остальное внесём вместе.",
+        "Веду дневник":
+            f"Карточка {pet} готова. Открой профиль и дополни что знаешь, или просто пиши мне.",
+    }
+    return texts.get(goal, f"Карточка {pet} готова. Открой профиль — там уже всё основное.")
 
 
 # ── Main handler ─────────────────────────────────────────────────────────────
@@ -566,22 +754,49 @@ def handle_onboarding_ai(
     elif breed_detection_data and breed_detection_data.get("success"):
         breeds = breed_detection_data.get("breeds", [])
         color = breed_detection_data.get("color")
+
         if breeds:
             top = breeds[0]
             if top["probability"] > 0.7:
+                # Высокая уверенность — записываем автоматически
                 collected["breed"] = top["name_ru"]
                 if color:
                     collected["color"] = color
-                actual_message = f"По фото определил: {top['name_ru']} ({int(top['probability'] * 100)}%)."
+                actual_message = (
+                    f"По фото определил породу: {top['name_ru']} "
+                    f"({int(top['probability'] * 100)}% уверенность). "
+                    f"Окрас: {color or 'не определён'}."
+                )
             else:
-                override_quick_replies = [
-                    {"label": f"{b['name_ru']} ({int(b['probability'] * 100)}%)",
-                     "value": b["name_ru"],
-                     "preferred": i == 0}
+                # Несколько вариантов — показываем пользователю, early return
+                ai_text = "Вижу несколько вариантов по фото."
+                breed_qr = [
+                    {
+                        "label": f"{b['name_ru']} ({int(b['probability'] * 100)}%)",
+                        "value": b["name_ru"],
+                        "preferred": i == 0,
+                    }
                     for i, b in enumerate(breeds[:3])
                 ]
-                options = ", ".join([f"{b['name_ru']} {int(b['probability'] * 100)}%" for b in breeds[:3]])
-                actual_message = f"Вижу несколько вариантов: {options}. Какой подходит?"
+                breed_qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
+
+                # Save state before early return
+                user_chat_id = _save_user_message(user_id, "Фото для определения породы")
+                user_flags["onboarding_collected"] = collected
+                update_user_flags(user_id, user_flags)
+                _save_ai_message(user_id, ai_text, None, user_chat_id)
+
+                return JSONResponse(content={
+                    "ai_response": ai_text,
+                    "quick_replies": breed_qr,
+                    "onboarding_phase": "collecting",
+                    "pet_id": None,
+                    "pet_card": None,
+                    "input_type": "text",
+                    "collected": collected,
+                })
+        else:
+            actual_message = "Не удалось определить породу по фото."
 
     # 2c. Avatar URL from message text
     elif message_text and message_text.startswith("avatar_url:"):
