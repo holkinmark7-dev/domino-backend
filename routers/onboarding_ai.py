@@ -1060,16 +1060,23 @@ def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -
     elif collected.get("age_years") is not None:
         age_display = f"{collected['age_years']} лет"
 
+    species_en = "Dog" if "dog" in species_raw else "Cat" if "cat" in species_raw else ""
+    gender_en = "Male" if gender_display == "Самец" else "Female" if gender_display == "Самка" else ""
+    neutered_en = "Yes" if neutered_display == "Да" else "No"
+
     return {
         "id": pet_id,
         "short_id": short_id,
         "name": collected.get("pet_name") or "Питомец",
         "species": species_display,
+        "species_en": species_en,
         "breed": collected.get("breed") or "—",
         "breed_en": BREED_EN.get(collected.get("breed") or "", collected.get("breed") or "—"),
         "gender": gender_display,
+        "gender_en": gender_en,
         "age": age_display,
         "neutered": neutered_display,
+        "neutered_en": neutered_en,
         "avatar_url": collected.get("avatar_url"),
     }
 
