@@ -76,7 +76,8 @@ def get_onboarding_history(request: Request, current_user: dict = Depends(get_cu
         .select("id, role, message, created_at, mode, metadata")
         .eq("user_id", user_id)
         .is_("pet_id", "null")
-        .order("created_at", desc=False)
+        .order("created_at", desc=True)
+        .limit(20)
         .execute()
     )
     messages = []
@@ -90,6 +91,7 @@ def get_onboarding_history(request: Request, current_user: dict = Depends(get_cu
             "mode": row.get("mode"),
             "welcome_card": metadata.get("welcome_card"),
         })
+    messages.reverse()
     return messages
 
 
@@ -113,10 +115,11 @@ def get_chat_history(pet_id: str, request: Request = None, current_user: dict = 
         supabase.table("chat")
         .select("id, role, message, created_at")
         .eq("pet_id", pet_id)
-        .order("created_at", desc=False)
+        .order("created_at", desc=True)
+        .limit(50)
         .execute()
     )
-    chat_rows = chat_result.data or []
+    chat_rows = list(reversed(chat_result.data or []))
 
     # ── 2. Triage enrichment: medical events keyed by source_chat_id ──────────
     med_lookup = _parse_medical_events(pet_id)

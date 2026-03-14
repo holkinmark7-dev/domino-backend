@@ -639,7 +639,7 @@ def handle_onboarding_ai(
         api_key = os.environ.get("GEMINI_API_KEY", "")
         client = genai.Client(api_key=api_key)
 
-        history_rows = _load_chat_history(user_id, limit=30)
+        history_rows = _load_chat_history(user_id, limit=20)
         gemini_history = []
         for row in history_rows:
             role = "model" if row["role"] == "ai" else "user"
