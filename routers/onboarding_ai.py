@@ -13,7 +13,8 @@ from fastapi.responses import JSONResponse
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
-from routers.services.breeds import BREED_EN
+from rapidfuzz import process as fuzz_process, fuzz
+from routers.services.breeds import ALL_BREEDS, BREED_EN
 from routers.services.memory import get_user_flags, update_user_flags
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,13 @@ _EMPTY_COLLECTED = {
     "color": None,
     "goal": None,
     "avatar_url": None,
+}
+
+# Нейтральные клички — не угадываем пол
+_NEUTRAL_NAMES = {
+    "бублик", "персик", "соня", "цезарь", "зефир", "карамель",
+    "ириска", "солнышко", "лаки", "чарли", "макс", "боня",
+    "коржик", "нюша", "симба", "пломбир", "тоша", "кузя",
 }
 
 # Явные собачьи клички (минимальный точный список)
@@ -117,6 +125,23 @@ def _is_complete(collected: dict) -> bool:
     required_ok = all(collected.get(f) for f in _REQUIRED_FIELDS)
     age_ok = any(collected.get(f) for f in _AGE_FIELDS)
     return required_ok and age_ok
+
+
+def _get_fallback_text(step: str, collected: dict) -> str:
+    """Return a safe fallback when Gemini returns empty text."""
+    pet = collected.get("pet_name", "питомца")
+    fallbacks = {
+        "owner_name": "Как тебя зовут?",
+        "pet_name": "Как зовут питомца?",
+        "species": "Кот или собака?",
+        "breed": f"Какой породы {pet}?",
+        "birth_date": f"Когда родился {pet}?",
+        "gender": "Мальчик или девочка?",
+        "is_neutered": "Кастрирован?",
+        "avatar": f"Добавим фото {pet}?",
+        "goal": "Чем могу помочь?",
+    }
+    return fallbacks.get(step, "Расскажи подробнее.")
 
 
 # ── Step logic (backend-controlled) ─────────────────────────────────────────
@@ -220,6 +245,10 @@ def _get_step_instruction(step: str, collected: dict) -> str:
             'Пример: "Расскажи. Что происходит?"',
 
         "species":
+            'Пользователь назвал экзотическое животное. Мягко скажи что пока работаешь '
+            'только с кошками и собаками. Спроси — кошка или собака? '
+            'Пример: "Пока я работаю только с кошками и собаками. У тебя кошка или собака?"'
+            if collected.get("_exotic_attempt") else
             'Спроси кошка или собака. Коротко. '
             'Пример: "Кошка или собака?"',
 
@@ -263,6 +292,12 @@ def _get_step_instruction(step: str, collected: dict) -> str:
 def _get_gender_quick_replies(pet_name: str) -> list:
     """Determine gender buttons based on pet name heuristic."""
     name_lower = (pet_name or "").lower()
+
+    if name_lower in _NEUTRAL_NAMES:
+        return [
+            {"label": "Мальчик", "value": "Мальчик", "preferred": False},
+            {"label": "Девочка", "value": "Девочка", "preferred": False},
+        ]
 
     if name_lower in _DOG_NAMES or name_lower in _CAT_NAMES:
         # Известная кличка — предлагаем с preferred
@@ -343,7 +378,7 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
             {"label": "Паспорта нет", "value": "Паспорта нет", "preferred": False},
         ],
 
-        "breed": [
+        "breed": [] if collected.get("_awaiting_breed_text") else [
             {"label": "Сфотографировать", "value": "BREED_PHOTO", "preferred": True},
             {"label": "Знаю породу", "value": "Знаю породу", "preferred": False},
             {"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False},
@@ -373,6 +408,8 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
     # Динамические кнопки для подкатегорий пород
     if step == "breed_subcategory":
         category = collected.get("_breed_category", "")
+        if category == "other":
+            return [{"label": "Метис / Не знаю", "value": "Не знаю породу", "preferred": False}]
         return _get_breed_subcategory_buttons(category)
 
     return qr_map.get(step, [])
@@ -380,17 +417,118 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
 
 # ── User input parser (no Gemini) ───────────────────────────────────────────
 
-def _parse_user_input(message: str, step: str, collected: dict) -> dict:
-    """Extract data from user message without Gemini. Returns dict with updated fields."""
+def _parse_age(msg: str) -> dict | None:
+    """Parse age from message using regex. Returns dict with birth_date or age_years, or None."""
+    # DD.MM.YYYY or DD/MM/YYYY
+    match = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', msg)
+    if match:
+        d, m, y = match.groups()
+        return {"birth_date": f"{y}-{m.zfill(2)}-{d.zfill(2)}"}
+    # YYYY-MM-DD (ISO format from date picker)
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', msg)
+    if match:
+        return {"birth_date": match.group(0)}
+    # X лет / X месяцев
+    age_match = re.search(r'(\d+)\s*(лет|год|года|месяц|месяца|месяцев)', msg.lower())
+    if age_match:
+        num = float(age_match.group(1))
+        unit = age_match.group(2)
+        if "месяц" in unit:
+            return {"age_years": round(num / 12, 1)}
+        return {"age_years": num}
+    return None
+
+
+def _parse_age_with_gemini(msg: str, client) -> dict | None:
+    """Fallback: ask Gemini to extract age from free-text message."""
+    if not client:
+        return None
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Из сообщения пользователя извлеки дату рождения или возраст питомца.\n"
+                "Верни ТОЛЬКО JSON без markdown:\n"
+                '{"birth_date":"YYYY-MM-DD"} или {"age_years":число} или {"unknown":true}\n'
+                f"Сообщение: {msg}"
+            ),
+        )
+        import json as _json
+        raw = (resp.text or "").strip().strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+        data = _json.loads(raw)
+        if data.get("birth_date"):
+            return {"birth_date": data["birth_date"]}
+        if data.get("age_years") is not None:
+            return {"age_years": float(data["age_years"])}
+    except Exception as e:
+        logger.warning("[_parse_age_with_gemini] %s", e)
+    return None
+
+
+def _parse_name(msg: str) -> str | None:
+    """Extract a name from message using regex. Handles 'Меня зовут X', 'Я X', etc."""
+    msg = msg.strip()
+    # "Меня зовут Марк" / "Зовут Марк"
+    m = re.search(r'(?:меня\s+)?зовут\s+(\S+)', msg, re.IGNORECASE)
+    if m:
+        return m.group(1).strip(".,!?")
+    # "Я Марк" / "Я — Марк"
+    m = re.search(r'^я\s*[—–-]?\s*(\S+)', msg, re.IGNORECASE)
+    if m:
+        return m.group(1).strip(".,!?")
+    # "Это Марк" / "Его зовут Рекс" / "Её зовут Мурка"
+    m = re.search(r'(?:это|его|её|ее)\s+(?:зовут\s+)?(\S+)', msg, re.IGNORECASE)
+    if m:
+        return m.group(1).strip(".,!?")
+    # Single word — just the name itself
+    words = msg.split()
+    if len(words) == 1:
+        return words[0].strip(".,!?")
+    # First capitalized word (not first word which might be "ну", "а")
+    for w in words:
+        clean = w.strip(".,!?")
+        if clean and clean[0].isupper():
+            return clean
+    return None
+
+
+def _parse_name_with_gemini(msg: str, field: str, client) -> str | None:
+    """Fallback: ask Gemini to extract a name from free-text message."""
+    if not client:
+        return None
+    label = "имя хозяина" if field == "owner_name" else "кличку питомца"
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                f"Из сообщения пользователя извлеки {label}.\n"
+                "Верни ТОЛЬКО имя одним словом, без кавычек и пояснений.\n"
+                f"Сообщение: {msg}"
+            ),
+        )
+        name = (resp.text or "").strip().strip('"\'.,!?')
+        if name and len(name) < 30:
+            return name
+    except Exception as e:
+        logger.warning("[_parse_name_with_gemini] %s", e)
+    return None
+
+
+def _parse_user_input(message: str, step: str, collected: dict, client=None) -> dict:
+    """Extract data from user message. Uses Gemini as fallback for complex inputs."""
     msg = message.strip()
     msg_lower = msg.lower()
     updates = {}
 
     if step == "owner_name":
-        updates["owner_name"] = msg
+        name = _parse_name(msg) or _parse_name_with_gemini(msg, "owner_name", client) or msg
+        updates["owner_name"] = name
 
     elif step == "pet_name":
-        updates["pet_name"] = msg
+        name = _parse_name(msg) or _parse_name_with_gemini(msg, "pet_name", client) or msg
+        updates["pet_name"] = name
 
     elif step == "species_guess_dog":
         if any(w in msg_lower for w in ["да", "пёс", "пес", "собака"]):
@@ -431,6 +569,13 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
         updates["_concern_heard"] = True
 
     elif step == "species":
+        _EXOTIC_ANIMALS = {
+            "хомяк", "хомячок", "попугай", "попугайчик", "рыбка", "рыба",
+            "черепаха", "черепашка", "хорёк", "хорек", "кролик", "крыса",
+            "морская свинка", "шиншилла", "ящерица", "змея", "игуана",
+            "птица", "птичка", "канарейка", "волнистый", "hamster", "parrot",
+            "rabbit", "turtle", "ferret", "fish", "guinea pig",
+        }
         if "кот" in msg_lower and "кошка" not in msg_lower:
             updates["species"] = "cat"
             updates["gender"] = "male"
@@ -439,6 +584,8 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
             updates["gender"] = "female"
         elif any(w in msg_lower for w in ["собака", "пёс", "пес"]):
             updates["species"] = "dog"
+        elif any(w in msg_lower for w in _EXOTIC_ANIMALS):
+            updates["_exotic_attempt"] = True
 
     elif step == "passport_offer":
         if any(w in msg_lower for w in ["заполню", "сам", "нет", "паспорта нет", "вручную"]):
@@ -448,9 +595,10 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
         if msg_lower in ["знаю породу", "не знаю породу", "breed_photo"]:
             if "не знаю" in msg_lower:
                 updates["breed"] = "Метис"
-            # "Знаю породу" и "BREED_PHOTO" — ничего не пишем, ждём следующего ввода
+            elif msg_lower == "знаю породу":
+                updates["_awaiting_breed_text"] = True
         else:
-            # Пользователь написал породу или категорию
+            # 1. Проверяем категории (ретривер, овчарка, терьер...)
             category = None
             for key, cat in _BREED_CATEGORIES.items():
                 if key in msg_lower:
@@ -458,14 +606,19 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
                     break
 
             if category:
-                # Это категория — нужно уточнение
                 updates["_breed_category"] = category
             else:
-                if "не знаю" in msg_lower or "метис" in msg_lower or "дворняга" in msg_lower or "беспородн" in msg_lower:
+                # 2. Rapidfuzz по 309 породам
+                match = fuzz_process.extractOne(msg, ALL_BREEDS, scorer=fuzz.WRatio, score_cutoff=80)
+                if match:
+                    updates["breed"] = match[0]
+                elif "не знаю" in msg_lower or "метис" in msg_lower or "дворняга" in msg_lower or "беспородн" in msg_lower:
+                    # 3. Метис / не знаю
                     updates["breed"] = "Метис"
                 else:
                     updates["breed"] = msg
                 updates["_breed_category"] = None
+                updates["_awaiting_breed_text"] = None
 
     elif step == "breed_subcategory":
         if "другая" in msg_lower:
@@ -483,21 +636,9 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
         elif "примерный" in msg_lower or "примерно" in msg_lower:
             pass  # ждём следующего ввода с числом
         else:
-            # DD.MM.YYYY или DD/MM/YYYY
-            match = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', msg)
-            if match:
-                d, m, y = match.groups()
-                updates["birth_date"] = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
-            else:
-                # X лет / X месяцев
-                age_match = re.search(r'(\d+)\s*(лет|год|года|месяц|месяца|месяцев)', msg_lower)
-                if age_match:
-                    num = float(age_match.group(1))
-                    unit = age_match.group(2)
-                    if "месяц" in unit:
-                        updates["age_years"] = round(num / 12, 1)
-                    else:
-                        updates["age_years"] = num
+            parsed = _parse_age(msg) or _parse_age_with_gemini(msg, client)
+            if parsed:
+                updates.update(parsed)
 
     elif step == "gender":
         if any(w in msg_lower for w in ["мальчик", "самец", "пёс"]):
@@ -508,9 +649,10 @@ def _parse_user_input(message: str, step: str, collected: dict) -> dict:
             updates["gender"] = "male"  # дефолт
 
     elif step == "is_neutered":
-        if msg_lower in {"да", "yes", "кастрирован", "стерилизована", "кастрирован."}:
+        msg_clean = msg.strip().rstrip(".,!?;:").lower()
+        if msg_clean in {"да", "yes", "кастрирован", "стерилизована"}:
             updates["is_neutered"] = True
-        elif msg_lower in {"нет", "no", "не кастрирован", "не стерилизована"}:
+        elif msg_clean in {"нет", "no", "не кастрирован", "не стерилизована"}:
             updates["is_neutered"] = False
 
     elif step == "avatar":
@@ -808,8 +950,11 @@ def handle_onboarding_ai(
     # 3. Parse user input (text messages only, not special inputs)
     current_step = _get_current_step(collected)
 
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    client = genai.Client(api_key=api_key)
+
     if actual_message and actual_message == message_text:
-        updates = _parse_user_input(actual_message, current_step, collected)
+        updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
         current_step = _get_current_step(collected)
 
@@ -850,9 +995,6 @@ def handle_onboarding_ai(
 
     # 8. Call Gemini — text only, no JSON
     try:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        client = genai.Client(api_key=api_key)
-
         history_rows = _load_chat_history(user_id, limit=20)
         gemini_history = []
         for row in history_rows:
@@ -876,6 +1018,9 @@ def handle_onboarding_ai(
         logger.error("[gemini_call] %s", e)
         ai_text = "Что-то пошло не так. Попробуй ещё раз."
 
+    if not ai_text:
+        ai_text = _get_fallback_text(current_step, collected)
+
     # 9. Save AI response
     _save_ai_message(user_id, ai_text, None, user_chat_id)
 
@@ -886,6 +1031,6 @@ def handle_onboarding_ai(
         "onboarding_phase": "collecting",
         "pet_id": None,
         "pet_card": None,
-        "input_type": "date" if current_step == "birth_date" else "text",
+        "input_type": "date_picker" if current_step == "birth_date" else "text",
         "collected": collected,
     })

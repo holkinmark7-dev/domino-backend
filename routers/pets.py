@@ -43,7 +43,11 @@ def get_my_pets(request: Request, current_user: dict = Depends(get_current_user)
     user_id = current_user["id"]
     try:
         response = supabase.table("pets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
-        return response.data or []
+        pets = response.data or []
+        for p in pets:
+            breed = p.get("breed") or ""
+            p["breed_en"] = BREED_EN.get(breed, breed or None)
+        return pets
     except Exception as e:
         logger.error("Database error: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -56,7 +60,11 @@ def get_pets(user_id: str, request: Request = None, current_user: dict = Depends
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         response = supabase.table("pets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
-        return response.data or []
+        pets = response.data or []
+        for p in pets:
+            breed = p.get("breed") or ""
+            p["breed_en"] = BREED_EN.get(breed, breed or None)
+        return pets
     except Exception as e:
         logger.error("Database error: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
