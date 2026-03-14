@@ -358,24 +358,21 @@ def _get_step_instruction(step: str, collected: dict) -> str:
         ),
 
         "gender": (
-            # Явно мужская кличка — подтверждаем
             f'Кличка {pet_name} — явно мужская. '
-            f'Спроси подтверждение: "{pet_name} — мальчик?" '
-            f'Используй кличку в родительном падеже если нужно. '
-            f'Одно короткое предложение.'
-            if (collected.get("pet_name") or "").lower() in _MALE_NAMES
+            f'Спроси подтверждение одним коротким предложением. '
+            f'Пример: "{pet_name} — мальчик?"'
+            if (collected.get("pet_name") or "").lower() in _MALE_NAMES or
+               (collected.get("pet_name") or "").lower() in _DOG_NAMES
             else
-            # Явно женская кличка — подтверждаем
             f'Кличка {pet_name} — явно женская. '
-            f'Спроси подтверждение: "{pet_name} — девочка?" '
-            f'Используй кличку в родительном падеже если нужно. '
-            f'Одно короткое предложение.'
-            if (collected.get("pet_name") or "").lower() in _FEMALE_NAMES
+            f'Спроси подтверждение одним коротким предложением. '
+            f'Пример: "{pet_name} — девочка?"'
+            if (collected.get("pet_name") or "").lower() in _FEMALE_NAMES or
+               (collected.get("pet_name") or "").lower() in _CAT_NAMES
             else
-            # Нейтральная кличка — спрашиваем прямо
-            f'Спроси пол {pet_name} прямо. '
-            f'Используй кличку в родительном падеже. '
-            f'Пример: "Кнопка — мальчик или девочка?"'
+            f'Используй кличку {pet_name} в родительном падеже. '
+            f'Спроси пол прямо — мальчик или девочка? '
+            f'Одно короткое предложение.'
         ),
 
         "is_neutered": (
@@ -402,23 +399,62 @@ def _get_step_instruction(step: str, collected: dict) -> str:
     return instructions.get(step, "Продолжи разговор естественно.")
 
 
-def _get_gender_quick_replies(pet_name: str) -> list:
+def _detect_name_gender(pet_name: str, client) -> str:
+    """Определяет вероятный пол по кличке через Gemini. Возвращает male/female/neutral."""
+    if not pet_name or not client:
+        return "neutral"
+
+    prompt = (
+        f'Кличка питомца: "{pet_name}"\n'
+        f'Определи вероятный пол по этой кличке для русскоязычной аудитории.\n'
+        f'Ответь ТОЛЬКО одним словом без пояснений: male, female, или neutral\n'
+        f'Примеры:\n'
+        f'"Рекс" → male\n'
+        f'"Мурка" → female\n'
+        f'"Иннокентий" → male\n'
+        f'"Персефона" → female\n'
+        f'"Снежана" → female\n'
+        f'"Кнопка" → neutral\n'
+        f'"Бублик" → neutral\n'
+        f'"Архимед" → male\n'
+        f'"Облако" → neutral'
+    )
+
+    try:
+        temp_chat = client.chats.create(model="gemini-2.5-flash")
+        response = temp_chat.send_message(prompt)
+        result = (response.text or "").strip().lower()
+        if result in ("male", "female", "neutral"):
+            return result
+        return "neutral"
+    except Exception:
+        return "neutral"
+
+
+def _get_gender_quick_replies(pet_name: str, client=None) -> list:
+    """Кнопки пола: уровень 1 — списки, уровень 2 — Gemini."""
     name_lower = (pet_name or "").lower().strip()
 
+    # Уровень 1 — списки
     if name_lower in _MALE_NAMES or name_lower in _DOG_NAMES:
-        # Явно или вероятно мужская кличка
+        gender_hint = "male"
+    elif name_lower in _FEMALE_NAMES or name_lower in _CAT_NAMES:
+        gender_hint = "female"
+    else:
+        # Уровень 2 — Gemini
+        gender_hint = _detect_name_gender(pet_name, client)
+
+    if gender_hint == "male":
         return [
             {"label": "Да, мальчик", "value": "Да, мальчик", "preferred": True},
             {"label": "Нет, девочка", "value": "Нет, девочка", "preferred": False},
         ]
-    elif name_lower in _FEMALE_NAMES or name_lower in _CAT_NAMES:
-        # Явно или вероятно женская кличка
+    elif gender_hint == "female":
         return [
             {"label": "Да, девочка", "value": "Да, девочка", "preferred": True},
             {"label": "Нет, мальчик", "value": "Нет, мальчик", "preferred": False},
         ]
     else:
-        # Нейтральная кличка — обе кнопки равнозначны
         return [
             {"label": "Мальчик", "value": "Мальчик", "preferred": False},
             {"label": "Девочка", "value": "Девочка", "preferred": False},
@@ -447,7 +483,7 @@ def _get_breed_subcategory_buttons(category: str) -> list:
     ]
 
 
-def _get_step_quick_replies(step: str, collected: dict) -> list:
+def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
     """Return quick reply buttons for a specific step. Backend-controlled, not Gemini."""
     pet = collected.get("pet_name") or ""
 
@@ -510,7 +546,7 @@ def _get_step_quick_replies(step: str, collected: dict) -> list:
             {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
         ],
 
-        "gender": _get_gender_quick_replies(pet),
+        "gender": _get_gender_quick_replies(pet, client),
 
         "is_neutered": [
             {"label": "Да", "value": "Да", "preferred": False},
@@ -1160,7 +1196,7 @@ def handle_onboarding_ai(
 
     # 7. Get step instruction and quick replies
     step_instruction = _get_step_instruction(current_step, collected)
-    quick_replies = override_quick_replies or _get_step_quick_replies(current_step, collected)
+    quick_replies = override_quick_replies or _get_step_quick_replies(current_step, collected, client)
 
     # 8. Call Gemini — text only, no JSON
     try:
