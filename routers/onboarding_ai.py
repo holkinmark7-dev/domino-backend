@@ -82,6 +82,13 @@ _MALE_NAMES = {
     "гектор", "цезарь", "максимус", "брут", "рэй", "джек",
     "барсик", "тигр", "тигрик", "кузя", "васька", "мурзик",
     "рыжик", "пушок", "снежок", "лёва", "леопольд",
+    "славик", "степан", "стёпа", "федя", "федор", "фёдор",
+    "гриша", "гришка", "серёга", "серёжа", "вася",
+    "мишка", "мишаня", "колян", "колька", "витёк", "витька",
+    "лёха", "лёшка", "санёк", "санька", "димон", "димка",
+    "тёма", "тёмка", "юрик", "юрка", "ромка", "ромыч",
+    "антоха", "антошка", "паша", "пашка", "дёма", "дёмка",
+    "боря", "борька", "гена", "генка", "слава", "славка",
 }
 
 # Клички которые на 99% указывают на женский пол
@@ -90,6 +97,11 @@ _FEMALE_NAMES = {
     "альма", "пальма", "роза", "жасмин", "принцесса", "маркиза",
     "лейла", "багира", "симба", "муся", "кися", "пуся",
     "снежинка", "ромашка", "лапочка", "милашка",
+    "маруся", "дуся", "глаша", "глашка", "даша", "дашка",
+    "маша", "машка", "наташа", "наташка", "катюша", "катька",
+    "танюша", "танька", "оленька", "олька", "люся", "люська",
+    "зося", "зоська", "нюша", "нюшка", "варя", "варька",
+    "полина", "поля", "полька", "света", "светка", "лена", "ленка",
 }
 
 # Категории пород для уточнения
@@ -126,9 +138,11 @@ def _build_system_prompt(collected: dict, step_instruction: str, current_step: s
         "2. Никогда не задавай вопросы следующих шагов.\n"
         "3. Один вопрос за одно сообщение.\n"
         "4. Никаких emoji.\n"
-        "5. Запрещённые слова: отлично, прекрасно, замечательно, зафиксировал, "
-        "понял, конечно, разумеется, рад помочь, с чего начнём.\n"
-        "6. Если есть блок КНОПКИ — текст должен вести именно к этим кнопкам.\n\n"
+        "5. СТОП-СЛОВА — никогда не начинай ответ с этих слов и не используй их: "
+        "Понял, Отлично, Прекрасно, Замечательно, Зафиксировал, Конечно, "
+        "Разумеется, Рад помочь, С чего начнём, Хорошо.\n"
+        "6. Если есть блок КНОПКИ — текст должен вести именно к этим кнопкам.\n"
+        "7. НИКОГДА не повторяй вопрос который уже был задан в этом разговоре.\n\n"
     )
     result = _CHARACTER_TEXT + "\n\n" + iron_rules + _PROMPT_TEMPLATE
     result = result.replace("{today_date}", today)
@@ -151,6 +165,23 @@ def _build_system_prompt(collected: dict, step_instruction: str, current_step: s
         "Один вопрос. Максимум 3 предложения если не указано иначе."
     )
     result += step_context
+
+    # Hint склонений клички
+    pet_name = collected.get("pet_name", "")
+    if pet_name:
+        declension_hint = (
+            f"\nСКЛОНЕНИЕ КЛИЧКИ '{pet_name}' — использовать строго:\n"
+            f"Именительный (кто?): {pet_name}\n"
+            f"Родительный (кого? без кого?): добавь окончание сам по правилам русского языка\n"
+            f"Дательный (кому? к кому?): добавь окончание сам\n"
+            f"Творительный (с кем?): добавь окончание сам\n"
+            f"ПРИМЕР для 'Рекс': Рекса, Рексу, с Рексом\n"
+            f"ПРИМЕР для 'Мурка': Мурки, Мурке, с Муркой\n"
+            f"ПРИМЕР для 'Славик': Славика, Славику, со Славиком\n"
+            f"НИКОГДА не используй кличку без склонения там где нужен падеж.\n"
+        )
+        result += declension_hint
+
     return result
 
 
@@ -561,11 +592,17 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
 
         "breed_subcategory": [],
 
-        "birth_date": [
-            {"label": "Знаю дату", "value": "Знаю дату", "preferred": True},
-            {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
-            {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
-        ],
+        "birth_date": (
+            [
+                {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
+            ]
+            if collected.get("_age_approximate")
+            else
+            [
+                {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
+                {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
+            ]
+        ),
 
         "gender": _get_gender_quick_replies(pet, client),
 
@@ -1188,6 +1225,7 @@ def handle_onboarding_ai(
 
     # 3. Parse user input (text messages only, not special inputs)
     current_step = _get_current_step(collected)
+    prev_step = current_step
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
     client = genai.Client(api_key=api_key)
@@ -1196,6 +1234,13 @@ def handle_onboarding_ai(
         updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
         current_step = _get_current_step(collected)
+
+    # Защита: после is_neutered принудительно идём на avatar если не заполнен
+    if (prev_step == "is_neutered" and
+        collected.get("is_neutered") is not None and
+        not collected.get("avatar_url") and
+        not collected.get("_avatar_skipped")):
+        current_step = "avatar"
 
     # 4. Save user message
     user_chat_id = None
@@ -1271,6 +1316,6 @@ def handle_onboarding_ai(
         "onboarding_phase": "collecting",
         "pet_id": None,
         "pet_card": None,
-        "input_type": "date_picker" if collected.get("_wants_date_picker") else "text",
+        "input_type": "date_picker" if current_step == "birth_date" and not collected.get("_age_approximate") else "text",
         "collected": collected,
     })
