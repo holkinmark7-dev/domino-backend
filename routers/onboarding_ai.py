@@ -22,11 +22,19 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 
-_PROMPT_PATH = Path(__file__).parent.parent / "design-reference" / "onboarding-prompt.txt"
+_DESIGN_DIR = Path(__file__).parent.parent / "design-reference"
+
+_PROMPT_PATH = _DESIGN_DIR / "onboarding-prompt.txt"
 try:
     _PROMPT_TEMPLATE: str = _PROMPT_PATH.read_text(encoding="utf-8")
 except FileNotFoundError:
     raise RuntimeError(f"[onboarding_ai] Промпт не найден: {_PROMPT_PATH}")
+
+_CHARACTER_PATH = _DESIGN_DIR / "dominik-character.txt"
+try:
+    _CHARACTER_TEXT: str = _CHARACTER_PATH.read_text(encoding="utf-8")
+except FileNotFoundError:
+    raise RuntimeError(f"[onboarding_ai] Характер не найден: {_CHARACTER_PATH}")
 
 # Fields to collect (for completion check)
 _REQUIRED_FIELDS = {"owner_name", "pet_name", "species", "breed", "gender", "is_neutered", "goal"}
@@ -52,7 +60,8 @@ _EMPTY_COLLECTED = {
 
 def _build_system_prompt(collected: dict, step_instruction: str) -> str:
     today = date.today().strftime("%d %B %Y")
-    result = _PROMPT_TEMPLATE.replace("{today_date}", today)
+    result = _CHARACTER_TEXT + "\n\n" + _PROMPT_TEMPLATE
+    result = result.replace("{today_date}", today)
     result = result.replace("{step_instruction}", step_instruction)
     for key in _EMPTY_COLLECTED:
         val = collected.get(key)
