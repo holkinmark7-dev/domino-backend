@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from supabase import create_client
 
 from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
-from rapidfuzz import process as fuzz_process, fuzz
+from rapidfuzz import fuzz
 from routers.services.breeds import ALL_BREEDS, BREED_EN
 from routers.services.memory import get_user_flags, update_user_flags
 
@@ -72,6 +72,11 @@ _FEMALE_NAMES = {
 
 # Кошачьи клички явно женского рода (для species_guess_cat preferred)
 _FEMALE_CAT_NAMES = {"мурка", "муся", "кися", "пуся", "маруся", "дуся", "глаша"}
+
+_NEUTRAL_NAMES = {
+    "снежок", "облако", "персик", "солнышко",
+    "пушок", "бублик", "рыжик", "малыш", "крошка",
+}
 
 
 # ── Parsing helpers ────────────────────────────────────────────────────────────
@@ -212,351 +217,342 @@ def _parse_breed_with_gemini(msg: str, species: str, client) -> dict:
 # ── Step logic ─────────────────────────────────────────────────────────────────
 
 def _get_current_step(collected: dict) -> str:
+    """Determine current onboarding step based on collected data."""
+
     if not collected.get("owner_name"):
         return "owner_name"
 
     if not collected.get("pet_name"):
         return "pet_name"
 
-    # Угадывание вида из кличек — ТОЛЬКО для явных животных кличек
+    # Угадывание вида — ТОЛЬКО для явных животных кличек
     if not collected.get("species") and not collected.get("_species_guessed"):
         name = (collected.get("pet_name") or "").lower().strip()
         if name in _DOG_NAMES:
             return "species_guess_dog"
-        elif name in _CAT_NAMES:
+        if name in _CAT_NAMES:
             return "species_guess_cat"
+        # Человеческие / нейтральные клички — НЕ угадываем, идём к goal
 
     if not collected.get("goal"):
         return "goal"
 
+    # Тревога — дать высказаться
     if collected.get("goal") == "Есть тревога" and not collected.get("_concern_heard"):
         return "concern"
 
+    # Вид — если не определён через угадывание
     if not collected.get("species"):
         return "species"
 
-    if not collected.get("_passport_skipped"):
+    # Паспорт — между species и breed
+    if not collected.get("_passport_skipped") and not collected.get("breed"):
         return "passport_offer"
 
-    # Breed — один шаг, без subcategory
+    # Порода — один шаг, без subcategory
     if not collected.get("breed"):
         return "breed"
 
-    if (not collected.get("birth_date") and
-        not collected.get("age_years") and
-        not collected.get("_age_skipped")):
+    # Дата рождения / возраст
+    if (
+        not collected.get("birth_date")
+        and not collected.get("age_years")
+        and not collected.get("_age_skipped")
+    ):
         return "birth_date"
 
-    # Gender пропускается если species=cat (пол уже известен из Кот/Кошка)
-    if not collected.get("gender") and collected.get("species") != "cat":
+    # Пол — пропускается для кошек (уже определён при выборе Кот/Кошка)
+    if not collected.get("gender"):
         return "gender"
 
-    if (collected.get("is_neutered") is None and
-        not collected.get("_neutered_skipped")):
+    # Кастрация
+    if collected.get("is_neutered") is None and not collected.get("_neutered_skipped"):
         return "is_neutered"
 
-    if (not collected.get("avatar_url") and
-        not collected.get("_avatar_skipped")):
+    # Аватар
+    if not collected.get("avatar_url") and not collected.get("_avatar_skipped"):
         return "avatar"
 
     return "complete"
 
 
 def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
-    """Return quick reply buttons for a specific step. Backend-controlled, not Gemini."""
-    pet = collected.get("pet_name") or ""
+    """Return quick reply buttons for current step."""
 
-    # Определяем gender hint для кнопок gender
-    if step == "gender" and not collected.get("_detected_gender_hint"):
-        name_lower = pet.lower()
-        if name_lower in _MALE_NAMES or name_lower in _DOG_NAMES:
-            collected["_detected_gender_hint"] = "male"
-        elif name_lower in _FEMALE_NAMES or name_lower in _CAT_NAMES:
-            collected["_detected_gender_hint"] = "female"
-        else:
-            collected["_detected_gender_hint"] = _detect_name_gender(pet, client)
+    if step == "owner_name":
+        return []
 
-    hint = collected.get("_detected_gender_hint", "neutral")
+    if step == "pet_name":
+        return []
 
-    qr_map = {
-        "owner_name": [],
-        "pet_name": [],
-
-        "species_guess_dog": [
+    if step == "species_guess_dog":
+        return [
             {"label": "Да, пёс", "value": "Да, пёс", "preferred": True},
             {"label": "Не угадал", "value": "Не угадал", "preferred": False},
-        ],
+        ]
 
-        "species_guess_cat": [
-            {"label": "Кот", "value": "Кот",
-             "preferred": pet.lower() not in _FEMALE_CAT_NAMES},
-            {"label": "Кошка", "value": "Кошка",
-             "preferred": pet.lower() in _FEMALE_CAT_NAMES},
+    if step == "species_guess_cat":
+        name = (collected.get("pet_name") or "").lower().strip()
+        if name in _FEMALE_CAT_NAMES:
+            return [
+                {"label": "Кошка", "value": "Кошка", "preferred": True},
+                {"label": "Кот", "value": "Кот", "preferred": False},
+                {"label": "Не угадал", "value": "Не угадал", "preferred": False},
+            ]
+        return [
+            {"label": "Кот", "value": "Кот", "preferred": True},
+            {"label": "Кошка", "value": "Кошка", "preferred": False},
             {"label": "Не угадал", "value": "Не угадал", "preferred": False},
-        ],
+        ]
 
-        "goal": [
+    if step == "goal":
+        return [
             {"label": "Слежу за здоровьем", "value": "Слежу за здоровьем", "preferred": False},
             {"label": "Прививки и плановое", "value": "Прививки и плановое", "preferred": False},
             {"label": "Веду дневник", "value": "Веду дневник", "preferred": False},
             {"label": "Кое-что беспокоит", "value": "Кое-что беспокоит", "preferred": False},
-        ],
+        ]
 
-        "concern": [],
+    if step == "concern":
+        return []
 
-        "species": [
+    if step == "species":
+        return [
             {"label": "Кот", "value": "Кот", "preferred": False},
             {"label": "Кошка", "value": "Кошка", "preferred": False},
             {"label": "Собака", "value": "Собака", "preferred": False},
-        ],
+        ]
 
-        "passport_offer": [
+    if step == "passport_offer":
+        return [
             {"label": "Сфотографирую", "value": "Сфотографирую", "preferred": True},
             {"label": "Лучше вручную", "value": "Лучше вручную", "preferred": False},
             {"label": "Паспорта нет", "value": "Паспорта нет", "preferred": False},
-        ],
+        ]
 
-        "breed": (
-            # Ждём фото — кнопок нет
-            []
-            if collected.get("_breed_photo_requested")
-            # Не знает породу — фото или пропустить
-            else [
+    if step == "breed":
+        if collected.get("_breed_unknown"):
+            return [
                 {"label": "Загрузить фото", "value": "BREED_PHOTO", "preferred": True},
-                {"label": "Пропустить", "value": "Пропустить породу", "preferred": False},
+                {"label": "Пропустить", "value": "Пропустить", "preferred": False},
             ]
-            if collected.get("_breed_unknown")
-            # Ждём уточнения от Gemini — динамические кнопки
-            else [
-                {"label": opt, "value": opt, "preferred": False}
-                for opt in collected.get("_breed_clarification_options", [])
-            ] + [{"label": "Другой вариант", "value": "Другой вариант", "preferred": False}]
-            if collected.get("_breed_clarification_options")
-            # Первый показ — только "Не знаю"
-            else [
-                {"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False},
+        if collected.get("_breed_photo_requested"):
+            return []
+        if collected.get("_breed_clarification_options"):
+            opts = collected["_breed_clarification_options"]
+            qr = [
+                {"label": o, "value": o, "preferred": i == 0}
+                for i, o in enumerate(opts[:4])
             ]
-        ),
+            qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
+            return qr
+        return [
+            {"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False},
+        ]
 
-        "birth_date": (
-            [{"label": "Не знаю", "value": "Не знаю возраст", "preferred": False}]
-            if collected.get("_age_approximate")
-            else [
-                {"label": "Знаю дату рождения", "value": "Знаю дату рождения", "preferred": True},
-                {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
-                {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
-            ]
-        ),
+    if step == "birth_date":
+        if collected.get("_age_approximate"):
+            return []
+        return [
+            {"label": "Знаю дату рождения", "value": "Знаю дату рождения", "preferred": True},
+            {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
+            {"label": "Не знаю", "value": "Не знаю", "preferred": False},
+        ]
 
-        "gender": (
-            [
-                {"label": "Да, мальчик", "value": "Да, мальчик", "preferred": True},
-                {"label": "Нет, девочка", "value": "Нет, девочка", "preferred": False},
-            ] if hint == "male" else
-            [
-                {"label": "Да, девочка", "value": "Да, девочка", "preferred": True},
-                {"label": "Нет, мальчик", "value": "Нет, мальчик", "preferred": False},
-            ] if hint == "female" else
-            [
+    if step == "gender":
+        hint = collected.get("_detected_gender_hint", "neutral")
+        name = (collected.get("pet_name") or "").lower().strip()
+        if name in _NEUTRAL_NAMES or hint == "neutral":
+            return [
                 {"label": "Мальчик", "value": "Мальчик", "preferred": False},
                 {"label": "Девочка", "value": "Девочка", "preferred": False},
             ]
-        ),
+        if hint == "male":
+            return [
+                {"label": "Да, мальчик", "value": "Да, мальчик", "preferred": True},
+                {"label": "Нет, девочка", "value": "Нет, девочка", "preferred": False},
+            ]
+        if hint == "female":
+            return [
+                {"label": "Да, девочка", "value": "Да, девочка", "preferred": True},
+                {"label": "Нет, мальчик", "value": "Нет, мальчик", "preferred": False},
+            ]
+        return [
+            {"label": "Мальчик", "value": "Мальчик", "preferred": False},
+            {"label": "Девочка", "value": "Девочка", "preferred": False},
+        ]
 
-        "is_neutered": [
+    if step == "is_neutered":
+        return [
             {"label": "Да", "value": "Да", "preferred": False},
             {"label": "Нет", "value": "Нет", "preferred": False},
-        ],
+        ]
 
-        "avatar": [
+    if step == "avatar":
+        return [
             {"label": "Загрузить фото", "value": "AVATAR_PHOTO", "preferred": True},
             {"label": "Пропустить", "value": "Пропустить", "preferred": False},
-        ],
-    }
+        ]
 
-    return qr_map.get(step, [])
+    return []
 
 
 def _get_step_instruction(step: str, collected: dict) -> str:
-    """Return Gemini instruction for a specific step."""
-    owner = collected.get("owner_name") or "хозяин"
-    pet_name = collected.get("pet_name") or "питомец"
-    species = collected.get("species") or ""
-    gender = collected.get("gender") or ""
+    """Return Gemini instruction for current step. Short and directive."""
+    owner = collected.get("owner_name", "")
+    pet = collected.get("pet_name", "")
+    species = collected.get("species", "")
+    breed = collected.get("breed", "")
+    gender = collected.get("gender", "")
     hint = collected.get("_detected_gender_hint", "neutral")
 
-    neutered_word = (
-        "стерилизована"
-        if (species in ("cat", "кошка") and gender == "female") or
-           (species == "dog" and gender == "female")
-        else "кастрирован"
-    )
-
-    instructions = {
-        "owner_name": (
-            'РАЗРЕШЕНО: поприветствуй тепло, скажи что ты Dominik, спроси имя.\n'
-            'ЗАПРЕЩЕНО: упоминать ветеринарию, здоровье, функции приложения.\n'
-            'МАКСИМУМ: 2 предложения.\n'
-            'EDGE CASE: если пользователь написал отказ ("не скажу") -> прими без вопросов.\n'
-            'EDGE CASE: если цифры/символы -> "Не расслышал — как тебя зовут?"\n'
+    if step == "owner_name":
+        return (
+            "Спроси как зовут владельца. Это первое сообщение.\n"
+            "ЗАПРЕЩЕНО: спрашивать что-то кроме имени, фраза 'С чего начнём'.\n"
             'ПРИМЕР: "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?"'
-        ),
+        )
 
-        "pet_name": (
-            f'РАЗРЕШЕНО: отреагировать на имя {owner} одной живой фразой и спросить кличку.\n'
-            f'ЗАПРЕЩЕНО: "приятно познакомиться", хвалить имя, два предложения.\n'
-            f'ЗАПРЕЩЕНО: спрашивать вид, породу, возраст, цель.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            f'ПРАВИЛО: реакция встроена в вопрос — не отдельным предложением.\n'
-            f'EDGE CASE: "не знаю" -> "Без имени пока — можно добавить позже."\n'
-            f'EDGE CASE: явно не кличка -> "Не расслышал кличку — как зовут питомца?"\n'
-            f'ПРИМЕРЫ:\n'
-            f'  owner="{owner}" -> "{owner} — и кто же у тебя живёт?"\n'
-            f'  "{owner}, как зовут питомца?"\n'
-            f'  "{owner}, кто у тебя?"'
-        ),
+    if step == "pet_name":
+        return (
+            f"Владельца зовут {owner}. Спроси кличку питомца.\n"
+            f"Реакция на имя владельца встроена в вопрос — ОДНА фраза, не два предложения.\n"
+            f"ЗАПРЕЩЕНО: 'Приятно познакомиться', отдельное приветствие, вопросы кроме клички.\n"
+            f'ПРИМЕР: "{owner}, как зовут питомца?"'
+        )
 
-        "species_guess_dog": (
-            f'РАЗРЕШЕНО: уверенно предположить что {pet_name} — собака, спросить угадал ли.\n'
-            f'ЗАПРЕЩЕНО: "кто это такой", открытый вопрос о виде, следующие шаги.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
+    if step == "species_guess_dog":
+        return (
+            f"Кличка {pet} похожа на собачью. Спроси подтверждение — собака?\n"
+            f"ЗАПРЕЩЕНО: породу, возраст, пол, что-либо кроме подтверждения вида.\n"
             f'ПРИМЕР: "Ставлю на собаку — угадал?"'
-        ),
+        )
 
-        "species_guess_cat": (
-            f'РАЗРЕШЕНО: уверенно предположить что {pet_name} — кошка, спросить угадал ли.\n'
-            f'ЗАПРЕЩЕНО: "кто это такой", открытый вопрос о виде, следующие шаги.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
+    if step == "species_guess_cat":
+        return (
+            f"Кличка {pet} похожа на кошачью. Спроси подтверждение — кот?\n"
+            f"ЗАПРЕЩЕНО: породу, возраст, пол, что-либо кроме подтверждения вида.\n"
             f'ПРИМЕР: "Ставлю на кота — угадал?"'
-        ),
+        )
 
-        "goal": (
-            f'РАЗРЕШЕНО: отреагировать на кличку {pet_name} тепло, спросить чем помочь.\n'
-            f'ЗАПРЕЩЕНО: "у него", "у неё" — пол неизвестен. ЗАПРЕЩЕНО: порода, возраст.\n'
-            f'МАКСИМУМ: 2 предложения.\n'
-            f'ПРАВИЛО: кличка в дательном падеже (Рексу, Мурке, Кузе, Себастьяну).\n'
-            f'ПРИМЕРЫ:\n'
-            f'  "{pet_name} повезло — ты рядом. Чем могу помочь?"\n'
-            f'  "{pet_name} повезло с хозяином. Чем могу помочь?"'
-        ),
+    if step == "goal":
+        return (
+            f"Спроси чем можешь помочь с {pet}.\n"
+            f"Кличку в дательном падеже: {pet} -> {pet}у (если мужской тип окончания).\n"
+            f"НЕ использовать 'у него' / 'у неё' — пол неизвестен.\n"
+            f"ЗАПРЕЩЕНО: вид, порода, возраст, пол, фраза 'С чего начнём'.\n"
+            f'ПРИМЕР: "{pet} повезло — ты рядом. Чем могу помочь?"'
+        )
 
-        "concern": (
-            f'РАЗРЕШЕНО: спросить что происходит с {pet_name} в творительном падеже.\n'
-            f'ЗАПРЕЩЕНО: медицинские вопросы, диагноз, торопить, следующие шаги.\n'
-            f'МАКСИМУМ: 2 предложения.\n'
-            f'ПРИМЕР: "Расскажи. Что происходит с {pet_name}?"'
-        ),
+    if step == "concern":
+        return (
+            f"Пользователя что-то беспокоит в {pet}. Спроси что происходит.\n"
+            f"Дай высказаться. Не предлагай решений.\n"
+            f"ЗАПРЕЩЕНО: уточняющие вопросы, предложения, советы, вид/порода/возраст.\n"
+            f'ПРИМЕР: "Расскажи. Что происходит с {pet}?"'
+        )
 
-        "species": (
-            f'РАЗРЕШЕНО: мягко объяснить что работаешь только с кошками и собаками.\n'
-            f'ПРИМЕР: "Пока работаю только с кошками и собаками. Кошка или собака есть?"'
-            if collected.get("_exotic_attempt") else
-            f'РАЗРЕШЕНО: сказать что чтобы помочь — нужна пара вопросов. Спросить кошка или собака.\n'
-            f'ПРИМЕР: "Чтобы разобраться — нужна пара вопросов. Кошка или собака?"'
-            if collected.get("_concern_heard") else
-            'РАЗРЕШЕНО: спросить кошка или собака. Одно предложение.\n'
-            'ПРИМЕР: "Кошка или собака?"'
-        ),
-
-        "passport_offer": (
-            f'РАЗРЕШЕНО: сказать что ждёшь фото паспорта.\n'
-            f'ЗАПРЕЩЕНО: спрашивать про породу или что-либо ещё.\n'
-            f'ПРИМЕР: "Жду фото — отправь прямо сюда."'
-            if collected.get("_passport_photo_requested") else
-            'РАЗРЕШЕНО: предложить сфотографировать ветпаспорт.\n'
-            'ЗАПРЕЩЕНО: спрашивать породу, возраст, пол.\n'
-            'МАКСИМУМ: 2 предложения.\n'
-            'ПРИМЕР: "Если есть ветпаспорт — просто сфотографируй. Сам всё перенесу в карточку."'
-        ),
-
-        "breed": (
-            'РАЗРЕШЕНО: сказать что ждёшь фото питомца.\n'
-            'ПРИМЕР: "Жду фото — отправь прямо сюда."'
-            if collected.get("_breed_photo_requested") else
-
-            f'РАЗРЕШЕНО: предложить сфотографировать {pet_name} для определения породы.\n'
-            f'ЗАПРЕЩЕНО: сразу называть Метисом.\n'
-            f'ПРИМЕР: "Загрузи фото {pet_name} — определю породу сам. Или пропускаем."'
-            if collected.get("_breed_unknown") else
-
-            f'РАЗРЕШЕНО: уточнить какой именно вариант из предложенных.\n'
-            f'ЗАПРЕЩЕНО: спрашивать возраст, пол, дату.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            f'ПРИМЕР: "Уточни — какой именно?"'
-            if collected.get("_breed_clarification_options") else
-
-            f'РАЗРЕШЕНО: спросить породу {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: предлагать фото сразу, спрашивать возраст или пол.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            f'ПРИМЕР СОБАКА: "Какая порода у {pet_name}? Если метис — тоже скажи."\n'
-            f'ПРИМЕР КОШКА: "Какая порода у {pet_name}? Если беспородная — тоже скажи."'
-        ),
-
-        "birth_date": (
-            # Первый раз — с инсайтом о породе
-            f'РАЗРЕШЕНО: дать 1-2 живых предложения про породу {collected.get("breed", "")}, '
-            f'потом спросить дату рождения {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: упоминать прививки, медицину, пол, кастрацию.\n'
-            f'МАКСИМУМ: 3 предложения суммарно.\n'
-            f'ПРАВИЛО: кличка в родительном падеже.\n'
-            f'РЕАКЦИЯ НА ДАТУ — вычисли возраст и отреагируй:\n'
-            f'  до 6 мес -> "Совсем малыш — только начинается."\n'
-            f'  6-12 мес -> "Семь месяцев — самый живой возраст."\n'
-            f'  1-3 года -> "Полтора года — в самом расцвете сил."\n'
-            f'  3-7 лет -> "Четыре года — лучший возраст."\n'
-            f'  7-10 лет -> "Семь лет — взрослый, знает чего хочет."\n'
-            f'  10+ лет -> "Десять лет — опыт и мудрость."\n'
-            f'EDGE CASE: дата в будущем -> "Это дата в будущем — может, ошибся годом?"\n'
-            f'EDGE CASE: 50+ лет назад -> "Что-то дата выглядит необычно — всё верно?"\n'
-            f'ПРИМЕР: "Лабрадоры едят за троих. Когда родился {pet_name}?"'
-            if collected.get("breed") and not collected.get("_breed_insight_shown")
-            else
-            f'РАЗРЕШЕНО: спросить дату рождения {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: упоминать прививки, медицину.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            f'ПРАВИЛО: кличка в родительном падеже.\n'
-            f'РЕАКЦИЯ НА ДАТУ — вычисли возраст и отреагируй живо (см. таблицу выше).\n'
-            f'EDGE CASE: дата в будущем -> "Это дата в будущем — может, ошибся годом?"\n'
-            f'EDGE CASE: 50+ лет назад -> "Что-то дата выглядит необычно — всё верно?"\n'
-            f'ПРИМЕР: "Когда родился {pet_name}?"'
-        ),
-
-        "gender": (
-            f'ТЕКУЩАЯ КЛИЧКА ПИТОМЦА: {pet_name}\n'
-            f'ЗАПРЕЩЕНО: использовать слово "Dominik" вместо клички.\n'
-            f'ЗАПРЕЩЕНО: спрашивать кастрацию, аватар.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            + (
-                f'КЛИЧКА ЯВНО МУЖСКАЯ.\n'
-                f'ПРИМЕР: "{pet_name} — мальчик?"'
-                if hint == "male" else
-                f'КЛИЧКА ЯВНО ЖЕНСКАЯ.\n'
-                f'ПРИМЕР: "{pet_name} — девочка?"'
-                if hint == "female" else
-                f'КЛИЧКА НЕЙТРАЛЬНАЯ.\n'
-                f'ПРИМЕР: "{pet_name} — мальчик или девочка?"'
+    if step == "species":
+        if collected.get("_exotic_attempt"):
+            return (
+                f"Пользователь назвал экзотическое животное. Мы работаем только с кошками и собаками.\n"
+                f'ПРИМЕР: "Пока работаю только с кошками и собаками. Кошка или собака есть?"'
             )
-        ),
+        if collected.get("_concern_heard"):
+            return (
+                f"Пользователь рассказал о тревоге. Теперь тебе нужно узнать — кошка или собака.\n"
+                f'ПРИМЕР: "Чтобы разобраться — нужна пара вопросов. Кошка или собака?"'
+            )
+        return (
+            'Спроси вид питомца: кошка или собака.\n'
+            'ЗАПРЕЩЕНО: порода, возраст, пол.\n'
+            'ПРИМЕР: "Кошка или собака?"'
+        )
 
-        "is_neutered": (
-            f'РАЗРЕШЕНО: спросить {neutered_word} ли {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: аватар, итоги, следующие шаги.\n'
-            f'МАКСИМУМ: 1 предложение.\n'
-            f'ПРИМЕР: "{pet_name} {neutered_word}?"'
-        ),
+    if step == "passport_offer":
+        return (
+            f"Предложи сфотографировать ветпаспорт {pet}. Скажи что сам перенесёшь данные.\n"
+            f"ЗАПРЕЩЕНО: порода, возраст, пол, кастрация.\n"
+            f'ПРИМЕР: "Если есть ветпаспорт — просто сфотографируй. Сам всё перенесу в карточку."'
+        )
 
-        "avatar": (
-            f'РАЗРЕШЕНО: попросить фото {pet_name} для профиля. Это последний шаг.\n'
-            f'ЗАПРЕЩЕНО: говорить "сфотографируй" — кнопка называется "Загрузить фото".\n'
-            f'ЗАПРЕЩЕНО: подводить итоги, говорить что карточка готова.\n'
-            f'МАКСИМУМ: 2 предложения.\n'
-            f'ПРАВИЛО: кличка в родительном падеже.\n'
-            f'ПРИМЕР: "И последнее — фото {pet_name}. Мордашка для профиля."\n'
-            f'ПРИМЕР: "Последний штрих — загрузи фото {pet_name}. Или пропусти, добавишь позже."'
-        ),
-    }
+    if step == "breed":
+        if collected.get("_breed_unknown"):
+            return (
+                f"Пользователь не знает породу {pet}. Предложи загрузить фото или пропустить.\n"
+                f'ПРИМЕР: "Загрузи фото {pet} — определю породу сам. Или пропускаем."'
+            )
+        if collected.get("_breed_photo_requested"):
+            return (
+                f"Ждём фото {pet} для определения породы.\n"
+                f'ПРИМЕР: "Жду фото — отправь прямо сюда."'
+            )
+        if collected.get("_breed_clarification_options"):
+            opts = ", ".join(collected["_breed_clarification_options"])
+            return (
+                f"Нужно уточнить породу. Варианты: {opts}.\n"
+                f"Спроси какой вариант правильный.\n"
+                f'ПРИМЕР: "Уточни — какая именно?"'
+            )
+        species_label = "собаки" if species == "dog" else "кошки"
+        metis = "Если метис — тоже скажи." if species == "dog" else "Если беспородная — тоже скажи."
+        return (
+            f"Спроси породу {species_label}. {metis}\n"
+            f"ЗАПРЕЩЕНО: возраст, пол, кастрация, дата рождения.\n"
+            f'ПРИМЕР: "Какая порода у {pet}? {metis}"'
+        )
 
-    return instructions.get(step, "Продолжи разговор естественно.")
+    if step == "birth_date":
+        insight = ""
+        if breed:
+            insight = f"Начни с ОДНОГО короткого интересного факта о породе {breed}. Потом спроси дату.\n"
+        if collected.get("_age_approximate"):
+            return (
+                f"Пользователь хочет указать примерный возраст {pet} текстом.\n"
+                f"Спроси сколько лет или месяцев.\n"
+                f'ПРИМЕР: "Сколько примерно лет {pet}?"'
+            )
+        return (
+            f"{insight}Спроси когда родился {pet}.\n"
+            f"ЗАПРЕЩЕНО: пол, кастрация, порода.\n"
+            f'ПРИМЕР: "Когда родился {pet}?"'
+        )
+
+    if step == "gender":
+        if hint == "male":
+            return (
+                f"Кличка {pet} похожа на мужскую. Спроси — мальчик?\n"
+                f"ЗАПРЕЩЕНО: кастрация, возраст, порода.\n"
+                f'ПРИМЕР: "{pet} — мальчик?"'
+            )
+        if hint == "female":
+            return (
+                f"Кличка {pet} похожа на женскую. Спроси — девочка?\n"
+                f"ЗАПРЕЩЕНО: кастрация, возраст, порода.\n"
+                f'ПРИМЕР: "{pet} — девочка?"'
+            )
+        return (
+            f"Спроси пол {pet} — мальчик или девочка.\n"
+            f"ЗАПРЕЩЕНО: кастрация, возраст, порода.\n"
+            f'ПРИМЕР: "{pet} — мальчик или девочка?"'
+        )
+
+    if step == "is_neutered":
+        word = "стерилизована" if gender == "female" else "кастрирован"
+        return (
+            f"Спроси {word} ли {pet}.\n"
+            f"ЗАПРЕЩЕНО: любые другие вопросы кроме кастрации/стерилизации.\n"
+            f'ПРИМЕР: "{pet} {word}?"'
+        )
+
+    if step == "avatar":
+        return (
+            f"Попроси фото {pet} для профиля. Это последний шаг.\n"
+            f"ЗАПРЕЩЕНО: любые другие вопросы.\n"
+            f'ПРИМЕР: "И последнее — фото {pet}. Мордашка для профиля."'
+        )
+
+    return "Ответь пользователю коротко."
 
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -565,11 +561,11 @@ def _build_system_prompt(
     collected: dict,
     step_instruction: str,
     current_step: str = "",
-    quick_replies: list = None
+    quick_replies: list = None,
 ) -> str:
-    today = date.today().strftime("%d %B %Y")
+    """Build system prompt: character + known + rules + instruction + buttons."""
 
-    # Только заполненные поля — не передаём null
+    # --- Заполненные поля ---
     field_labels = {
         "owner_name": "Владелец",
         "pet_name": "Кличка",
@@ -578,53 +574,53 @@ def _build_system_prompt(
         "birth_date": "Дата рождения",
         "age_years": "Возраст (лет)",
         "gender": "Пол",
-        "is_neutered": "Кастрирован",
+        "is_neutered": "Кастрирован/стерилизован",
         "goal": "Цель",
     }
     known_lines = []
     for key, label in field_labels.items():
         val = collected.get(key)
         if val is not None and val != "" and val != "null":
-            known_lines.append(f"{label}: {val}")
+            known_lines.append(f"  {label}: {val}")
+    known_block = "\n".join(known_lines) if known_lines else "  пока ничего"
 
-    known_fields = "\n".join(known_lines) if known_lines else "пока ничего не известно"
-
-    # Контекст для Gemini — внутренние флаги
-    context_notes = []
-    if collected.get("_breed_unknown"):
-        context_notes.append("Пользователь не знает породу.")
+    # --- Контекстные заметки ---
+    ctx = []
     if collected.get("_concern_heard"):
-        context_notes.append("Пользователь рассказал о тревоге — в финале вернись к ней.")
-    if collected.get("_breed_clarification_options"):
-        opts = ", ".join(collected["_breed_clarification_options"])
-        context_notes.append(f"Предложены варианты породы: {opts}")
+        ctx.append("Пользователь рассказал о тревоге — в финале вернись к ней.")
+    if collected.get("_breed_unknown"):
+        ctx.append("Пользователь не знает породу.")
+    ctx_block = ("\nКОНТЕКСТ:\n" + "\n".join(f"  - {c}" for c in ctx) + "\n") if ctx else ""
 
-    # Кнопки которые увидит пользователь
+    # --- Кнопки ---
     if quick_replies:
         labels = " | ".join(qr["label"] for qr in quick_replies)
-        buttons_line = f"\nКНОПКИ: [{labels}]\nПиши текст который ведёт именно к этим кнопкам."
+        btn = (f"\nКНОПКИ КОТОРЫЕ УВИДИТ ПОЛЬЗОВАТЕЛЬ: [{labels}]\n"
+               f"Пиши текст который ВЕДЁТ именно к этим кнопкам. "
+               f"Не перечисляй варианты в тексте — пользователь увидит кнопки сам.")
     else:
-        buttons_line = "\nКнопок нет — пользователь отвечает текстом."
+        btn = "\nКнопок нет — пользователь отвечает текстом."
 
-    # Склонение клички
-    pet_name = collected.get("pet_name", "")
-    declension = f"\nСклоняй кличку '{pet_name}' правильно по-русски." if pet_name else ""
-
-    # Собираем промпт
-    result = _CHARACTER_TEXT.strip()
-    result += "\n\n---\n"
-    result += f"Сегодня: {today}\n"
-    result += f"\nУЖЕ ИЗВЕСТНО:\n{known_fields}\n"
-
-    if context_notes:
-        result += "\nКОНТЕКСТ:\n" + "\n".join(f"- {n}" for n in context_notes) + "\n"
-
-    result += f"\nТВОЯ ЗАДАЧА СЕЙЧАС:\n{step_instruction}"
-    result += buttons_line
-    result += declension
-    result += "\n\nМАКСИМУМ 3 предложения. Один вопрос."
-
-    return result
+    # --- Сборка ---
+    return (
+        f"{_CHARACTER_TEXT.strip()}\n"
+        f"\n---\n"
+        f"\nУЖЕ ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ:\n{known_block}\n"
+        f"{ctx_block}"
+        f"\n=== ЖЕЛЕЗНЫЕ ПРАВИЛА ===\n"
+        f"1. Отвечай ТОЛЬКО на задачу ниже — ничего другого\n"
+        f"2. ОДИН вопрос за сообщение\n"
+        f"3. НОЛЬ emoji\n"
+        f"4. Максимум 2 предложения\n"
+        f"5. ЗАПРЕЩЁННЫЕ СЛОВА — никогда не произноси: "
+        f"Понял, Отлично, Прекрасно, Замечательно, Зафиксировал, "
+        f"Конечно, Разумеется, Рад помочь, С чего начнём, Хорошо, "
+        f"Приятно познакомиться, Давай начнём\n"
+        f"6. ЗАПРЕЩЕНО упоминать имя Dominik в тексте вместо клички питомца\n"
+        f"=========================\n"
+        f"\nТВОЯ ЗАДАЧА СЕЙЧАС:\n{step_instruction}"
+        f"{btn}\n"
+    )
 
 
 # ── Stop-phrase filter ─────────────────────────────────────────────────────────
@@ -650,207 +646,216 @@ def _remove_stop_phrases(text: str) -> str:
 # ── Fallback text ──────────────────────────────────────────────────────────────
 
 def _get_fallback_text(step: str, collected: dict) -> str:
-    pet = collected.get("pet_name", "питомца")
+    """Fallback text if Gemini returns empty response."""
+    pet = collected.get("pet_name", "питомец")
     fallbacks = {
-        "owner_name": "Привет. Как тебя зовут?",
+        "owner_name": "Как тебя зовут?",
         "pet_name": "Как зовут питомца?",
-        "species_guess_dog": "Ставлю на собаку — угадал?",
-        "species_guess_cat": "Ставлю на кота — угадал?",
-        "goal": "Чем могу помочь?",
-        "concern": "Расскажи — что происходит?",
+        "species_guess_dog": "Собака?",
+        "species_guess_cat": "Кот?",
+        "goal": f"Чем могу помочь с {pet}?",
+        "concern": f"Расскажи что беспокоит в {pet}.",
         "species": "Кошка или собака?",
-        "passport_offer": "Если есть ветпаспорт — сфотографируй.",
+        "passport_offer": "Есть ветпаспорт? Могу сфотографировать и перенести данные.",
         "breed": f"Какая порода у {pet}?",
         "birth_date": f"Когда родился {pet}?",
-        "gender": "Мальчик или девочка?",
-        "is_neutered": "Кастрирован?",
-        "avatar": f"Добавим фото {pet}?",
+        "gender": f"{pet} — мальчик или девочка?",
+        "is_neutered": f"{pet} кастрирован?",
+        "avatar": f"Загрузи фото {pet} для профиля.",
     }
-    return fallbacks.get(step, "Расскажи подробнее.")
+    return fallbacks.get(step, f"Расскажи мне про {pet}.")
 
 
 # ── User input parser ─────────────────────────────────────────────────────────
 
-def _parse_user_input(
-    msg: str, step: str, collected: dict, client=None
-) -> dict:
-    """Парсит сообщение. Возвращает только изменения для collected."""
-    updates = {}
-    msg_lower = msg.lower().strip()
+def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict:
+    """Parse user message and return field updates for collected dict."""
+    if not msg or not msg.strip():
+        return {}
+
+    raw = msg.strip()
+    low = raw.lower()
+    clean = low.rstrip(".,!?;:\u2026")
+    updates: dict = {}
 
     if step == "owner_name":
-        result = _parse_name(msg, "owner_name")
-        if not result["is_valid"] and (result.get("needs_ai") or len(msg) > 10):
-            result = _parse_name_with_gemini(msg, "owner_name", client)
+        if any(w in low for w in ["не скажу", "аноним", "не хочу", "не твоё дело"]):
+            updates["owner_name"] = "Друг"
+            return updates
+        result = _parse_name(raw, "owner_name")
         if result.get("is_valid") and result.get("name"):
             updates["owner_name"] = result["name"]
-            updates.pop("_name_invalid_attempt", None)
-        elif msg_lower in ("не скажу", "аноним", "анонимно", "-", "\u2014"):
-            updates["owner_name"] = "Хозяин"
-        else:
-            updates["_name_invalid_attempt"] = True
+        elif result.get("needs_ai") and client:
+            ai = _parse_name_with_gemini(raw, "owner_name", client)
+            if ai.get("is_valid") and ai.get("name"):
+                updates["owner_name"] = ai["name"]
 
     elif step == "pet_name":
-        result = _parse_name(msg, "pet_name")
-        if not result["is_valid"] and (result.get("needs_ai") or len(msg) > 10):
-            result = _parse_name_with_gemini(msg, "pet_name", client)
+        if any(w in low for w in ["не знаю", "нет имени", "без имени", "пока нет"]):
+            updates["pet_name"] = "Питомец"
+            return updates
+        result = _parse_name(raw, "pet_name")
         if result.get("is_valid") and result.get("name"):
             updates["pet_name"] = result["name"]
-            updates.pop("_name_invalid_attempt", None)
-        elif msg_lower in ("не знаю", "без имени", "пока без имени"):
-            updates["pet_name"] = "Питомец"
-        else:
-            updates["_name_invalid_attempt"] = True
+        elif result.get("needs_ai") and client:
+            ai = _parse_name_with_gemini(raw, "pet_name", client)
+            if ai.get("is_valid") and ai.get("name"):
+                updates["pet_name"] = ai["name"]
 
     elif step == "species_guess_dog":
-        if msg_lower in ("да, пёс", "да", "пёс", "собака", "он собака"):
+        if any(w in clean for w in ["да", "пёс", "пес", "собака", "угадал"]):
             updates["species"] = "dog"
-            updates["_species_guessed"] = True
-        elif msg_lower == "не угадал":
+        else:
             updates["_species_guessed"] = True
 
     elif step == "species_guess_cat":
-        if msg_lower in ("кот", "он кот"):
+        if clean in ("кот", "да кот", "да, кот"):
             updates["species"] = "cat"
             updates["gender"] = "male"
-            updates["_species_guessed"] = True
-        elif msg_lower in ("кошка", "она кошка"):
+        elif clean in ("кошка", "да кошка", "да, кошка"):
             updates["species"] = "cat"
             updates["gender"] = "female"
-            updates["_species_guessed"] = True
-        elif msg_lower == "не угадал":
+        elif "кошка" in clean:
+            updates["species"] = "cat"
+            updates["gender"] = "female"
+        elif "кот" in clean.split():
+            updates["species"] = "cat"
+            updates["gender"] = "male"
+        else:
             updates["_species_guessed"] = True
 
     elif step == "goal":
-        if "беспокоит" in msg_lower or "тревог" in msg_lower:
-            updates["goal"] = "Есть тревога"
-        elif "здоровь" in msg_lower or "слежу" in msg_lower:
-            updates["goal"] = "Слежу за здоровьем"
-        elif "привив" in msg_lower or "планов" in msg_lower:
-            updates["goal"] = "Прививки и плановое"
-        elif "дневник" in msg_lower or "веду" in msg_lower:
-            updates["goal"] = "Веду дневник"
-        else:
-            updates["goal"] = msg.strip()
+        goal_map = {
+            "слежу за здоровьем": "Слежу за здоровьем",
+            "прививки и плановое": "Прививки и плановое",
+            "веду дневник": "Веду дневник",
+            "кое-что беспокоит": "Есть тревога",
+            "кое что беспокоит": "Есть тревога",
+            "беспокоит": "Есть тревога",
+            "тревога": "Есть тревога",
+            "здоровь": "Слежу за здоровьем",
+            "привив": "Прививки и плановое",
+            "дневник": "Веду дневник",
+        }
+        for key, value in goal_map.items():
+            if key in low:
+                updates["goal"] = value
+                break
+        if not updates.get("goal") and len(raw) > 2:
+            updates["goal"] = raw
 
     elif step == "concern":
         updates["_concern_heard"] = True
 
     elif step == "species":
-        if msg_lower in ("кот", "кот у меня"):
+        if clean == "кот" or (clean.split() and clean.split()[0] == "кот"):
             updates["species"] = "cat"
             updates["gender"] = "male"
-        elif msg_lower in ("кошка", "кошка у меня"):
+        elif "кошка" in clean:
             updates["species"] = "cat"
             updates["gender"] = "female"
-        elif msg_lower in ("собака", "собака у меня", "пёс"):
+        elif any(w in clean for w in ["собака", "пёс", "пес"]):
             updates["species"] = "dog"
         else:
-            exotic = ["попугай", "хомяк", "черепах", "рыб", "кролик",
-                      "крыс", "морск", "змея", "ящериц", "птиц", "хорёк"]
-            if any(w in msg_lower for w in exotic):
+            exotic = [
+                "попугай", "хомяк", "рыбка", "черепаха", "кролик",
+                "крыса", "морская свинка", "хорёк", "хорек",
+                "ящерица", "змея", "шиншилла", "птица", "канарейка",
+            ]
+            if any(w in low for w in exotic):
                 updates["_exotic_attempt"] = True
 
     elif step == "passport_offer":
-        if any(w in msg_lower for w in ["сфотографирую", "фото", "сниму"]):
+        if "сфотографирую" in low or clean == "сфотографирую":
             updates["_passport_photo_requested"] = True
-        elif any(w in msg_lower for w in ["вручную", "сам", "нет", "паспорта нет", "лучше вручную"]):
+        elif any(w in low for w in ["вручную", "паспорта нет", "нет паспорта", "лучше вручную"]):
+            updates["_passport_skipped"] = True
+        elif any(w in low for w in ["нет", "пропуст", "без паспорта"]):
             updates["_passport_skipped"] = True
 
     elif step == "breed":
-        if msg_lower == "не знаю породу":
+        if any(w in low for w in ["не знаю породу", "не знаю", "хз", "без понятия"]):
             updates["_breed_unknown"] = True
-
-        elif msg == "BREED_PHOTO":
-            updates["_breed_photo_requested"] = True
-
-        elif msg_lower == "пропустить породу":
+        elif clean in ("пропустить", "пропуск", "скип"):
             updates["breed"] = "Метис"
-            updates.pop("_breed_unknown", None)
-
-        elif msg_lower == "другой вариант":
-            # Пользователь хочет другой вариант — сбрасываем и ждём ввода
+        elif raw == "BREED_PHOTO":
+            updates["_breed_photo_requested"] = True
+        elif "другая порода" in low:
             updates["_breed_clarification_options"] = None
-
-        elif collected.get("_breed_clarification_options"):
-            # Пользователь выбрал один из предложенных вариантов
-            options = collected.get("_breed_clarification_options", [])
-            matched = False
-            for opt in options:
-                if msg_lower == opt.lower():
-                    updates["breed"] = opt
-                    updates["_breed_clarification_options"] = None
-                    updates.pop("_breed_unknown", None)
-                    matched = True
-                    break
-            if not matched:
-                # Не выбрал из списка — записываем как ввёл
-                updates["breed"] = msg.strip().capitalize()
-                updates["_breed_clarification_options"] = None
-
+            updates["_breed_unknown"] = None
+        elif low in ("дворняга", "дворняжка", "метис", "беспородная", "беспородный",
+                      "дворняга или метис", "двортерьер"):
+            updates["breed"] = "Метис"
         else:
-            # Пользователь написал название породы — парсим
-            # Уровень 1: rapidfuzz 80%
-            match = fuzz_process.extractOne(
-                msg, ALL_BREEDS, scorer=fuzz.WRatio, score_cutoff=80
-            )
-            if match:
-                updates["breed"] = match[0]
-                updates.pop("_breed_unknown", None)
-            else:
-                # Уровень 2: Gemini
-                species = collected.get("species", "dog")
-                result = _parse_breed_with_gemini(msg, species, client)
-                if result.get("needs_clarification") and result.get("options"):
-                    updates["_breed_clarification_options"] = result["options"]
-                elif result.get("breed"):
+            best_match = None
+            best_score = 0
+            for breed_name in ALL_BREEDS:
+                score = fuzz.ratio(low, breed_name.lower())
+                if score > best_score:
+                    best_score = score
+                    best_match = breed_name
+            if best_score >= 80 and best_match:
+                updates["breed"] = best_match
+            elif client:
+                result = _parse_breed_with_gemini(raw, collected.get("species", "dog"), client)
+                if result.get("breed"):
                     updates["breed"] = result["breed"]
-                    updates.pop("_breed_unknown", None)
-                else:
-                    updates["breed"] = msg.strip().capitalize()
-                    updates.pop("_breed_unknown", None)
+                elif result.get("needs_clarification") and result.get("options"):
+                    updates["_breed_clarification_options"] = result["options"]
 
     elif step == "birth_date":
-        updates["_breed_insight_shown"] = True
-
-        if msg_lower in ("знаю дату рождения", "знаю дату"):
+        if clean in ("знаю дату рождения", "знаю дату"):
             updates["_wants_date_picker"] = True
+        elif clean in ("примерный возраст", "примерно"):
+            updates["_age_approximate"] = True
+            updates["_wants_date_picker"] = False
+        elif clean in ("не знаю", "хз", "без понятия"):
+            updates["_age_skipped"] = True
+            updates["_wants_date_picker"] = False
         else:
             updates["_wants_date_picker"] = False
-
-            if msg_lower in ("не знаю", "не знаю возраст", "пропустить"):
-                updates["_age_skipped"] = True
-            elif msg_lower in ("примерный возраст", "примерно"):
-                updates["_age_approximate"] = True
-            else:
-                result = _parse_age(msg)
-                if not result["parsed"]:
-                    result = _parse_age_with_gemini(msg, client)
-                if result.get("age_years") is not None:
-                    updates["age_years"] = result["age_years"]
-                    updates.pop("_age_approximate", None)
-                elif result.get("birth_date"):
-                    updates["birth_date"] = result["birth_date"]
-                    updates.pop("_wants_date_picker", None)
+            updates["_age_approximate"] = False
+            age_result = _parse_age(raw)
+            if age_result.get("parsed"):
+                if age_result.get("age_years") is not None:
+                    updates["age_years"] = age_result["age_years"]
+                if age_result.get("birth_date"):
+                    updates["birth_date"] = age_result["birth_date"]
+            elif client:
+                age_result = _parse_age_with_gemini(raw, client)
+                if age_result.get("age_years") is not None:
+                    updates["age_years"] = age_result["age_years"]
+                elif age_result.get("birth_date"):
+                    updates["birth_date"] = age_result["birth_date"]
 
     elif step == "gender":
-        if any(w in msg_lower for w in ["мальчик", "самец", "кобель", "пёс"]):
+        if any(w in clean for w in ["мальчик", "кобель", "самец", "пацан", "парень"]):
             updates["gender"] = "male"
-        elif any(w in msg_lower for w in ["девочка", "самка", "сука"]):
+        elif any(w in clean for w in ["девочка", "сука", "самка"]):
             updates["gender"] = "female"
-        elif msg_lower.rstrip(".,!") == "да":
+        elif clean in ("да", "ага", "верно", "точно", "угу"):
             hint = collected.get("_detected_gender_hint", "neutral")
-            updates["gender"] = "male" if hint != "female" else "female"
+            if hint == "male":
+                updates["gender"] = "male"
+            elif hint == "female":
+                updates["gender"] = "female"
+        elif clean == "нет":
+            hint = collected.get("_detected_gender_hint", "neutral")
+            if hint == "male":
+                updates["gender"] = "female"
+            elif hint == "female":
+                updates["gender"] = "male"
 
     elif step == "is_neutered":
-        msg_clean = msg.strip().rstrip(".,!?;:").lower()
-        if msg_clean in {"да", "yes", "кастрирован", "стерилизована", "стерилизован"}:
+        if clean in ("да", "ага", "угу", "кастрирован", "стерилизована", "кастрирована"):
             updates["is_neutered"] = True
-        elif msg_clean in {"нет", "no", "не кастрирован", "не стерилизована"}:
+        elif clean in ("нет", "не", "нет ещё", "нет еще"):
             updates["is_neutered"] = False
 
     elif step == "avatar":
-        if "пропуст" in msg_lower:
+        if raw == "AVATAR_PHOTO":
+            pass
+        elif any(w in low for w in ["пропустить", "пропуск", "потом", "позже", "не сейчас", "скип"]):
             updates["_avatar_skipped"] = True
 
     return updates
@@ -1266,7 +1271,7 @@ def handle_onboarding_ai(
     _save_ai_message(user_id, ai_text, None, user_chat_id)
 
     # 17. Return response
-    input_type = "date_picker" if collected.get("_wants_date_picker") else "text"
+    input_type = "date_picker" if (current_step == "birth_date" and collected.get("_wants_date_picker")) else "text"
 
     return JSONResponse(content={
         "ai_response": ai_text,
