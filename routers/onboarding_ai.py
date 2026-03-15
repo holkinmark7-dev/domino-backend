@@ -26,12 +26,6 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 _DESIGN_DIR = Path(__file__).parent.parent / "design-reference"
 
-_PROMPT_PATH = _DESIGN_DIR / "onboarding-prompt.txt"
-try:
-    _PROMPT_TEMPLATE: str = _PROMPT_PATH.read_text(encoding="utf-8")
-except FileNotFoundError:
-    raise RuntimeError(f"[onboarding_ai] Промпт не найден: {_PROMPT_PATH}")
-
 _CHARACTER_PATH = _DESIGN_DIR / "dominik-character.txt"
 try:
     _CHARACTER_TEXT: str = _CHARACTER_PATH.read_text(encoding="utf-8")
@@ -114,7 +108,7 @@ def _parse_age_with_gemini(msg: str, client) -> dict:
         f'- непонятно -> оба null'
     )
     try:
-        chat = client.chats.create(model="gemini-2.5-flash")
+        chat = client.chats.create(model="gemini-2.5-flash-lite")
         resp = chat.send_message(prompt)
         result = json.loads((resp.text or "").strip())
         result["parsed"] = True
@@ -161,7 +155,7 @@ def _parse_name_with_gemini(msg: str, field: str, client) -> dict:
         f'- Имя максимум 2 слова'
     )
     try:
-        chat = client.chats.create(model="gemini-2.5-flash")
+        chat = client.chats.create(model="gemini-2.5-flash-lite")
         resp = chat.send_message(prompt)
         return json.loads((resp.text or "").strip())
     except Exception:
@@ -180,7 +174,7 @@ def _detect_name_gender(pet_name: str, client) -> str:
         f'"Персефона" -> female, "Кнопка" -> neutral'
     )
     try:
-        chat = client.chats.create(model="gemini-2.5-flash")
+        chat = client.chats.create(model="gemini-2.5-flash-lite")
         resp = chat.send_message(prompt)
         result = (resp.text or "").strip().lower()
         return result if result in ("male", "female", "neutral") else "neutral"
@@ -208,7 +202,7 @@ def _parse_breed_with_gemini(msg: str, species: str, client) -> dict:
         f'"дворняга" -> {{"breed": "Метис", "needs_clarification": false}}'
     )
     try:
-        chat = client.chats.create(model="gemini-2.5-flash")
+        chat = client.chats.create(model="gemini-2.5-flash-lite")
         resp = chat.send_message(prompt)
         return json.loads((resp.text or "").strip())
     except Exception:
@@ -575,68 +569,82 @@ def _build_system_prompt(
 ) -> str:
     today = date.today().strftime("%d %B %Y")
 
-    result = _CHARACTER_TEXT + "\n\n"
-
-    result += (
-        "ЖЕЛЕЗНЫЕ ПРАВИЛА — нарушать нельзя никогда:\n"
-        "1. Отвечай ТОЛЬКО на текущий шаг — смотри блок ТЕКУЩИЙ ШАГ.\n"
-        "2. Никогда не задавай вопросы следующих шагов.\n"
-        "3. Один вопрос за одно сообщение.\n"
-        "4. Никаких emoji.\n"
-        "5. СТОП-СЛОВА — никогда: Понял, Отлично, Прекрасно, Замечательно, "
-        "Зафиксировал, Конечно, Разумеется, Рад помочь, С чего начнём, Хорошо.\n"
-        "6. Если есть блок КНОПКИ — текст ведёт именно к этим кнопкам.\n"
-        "7. Никогда не повторяй вопрос который уже был задан.\n"
-        "8. НИКОГДА не используй имя 'Dominik' вместо клички питомца.\n\n"
-    )
-
-    result += _PROMPT_TEMPLATE
-    result = result.replace("{today_date}", today)
-    result = result.replace("{step_instruction}", step_instruction)
-
-    fields = ["owner_name", "pet_name", "species", "breed", "birth_date",
-              "age_years", "gender", "is_neutered", "goal"]
-    for key in fields:
+    # Только заполненные поля — не передаём null
+    field_labels = {
+        "owner_name": "Владелец",
+        "pet_name": "Кличка",
+        "species": "Вид",
+        "breed": "Порода",
+        "birth_date": "Дата рождения",
+        "age_years": "Возраст (лет)",
+        "gender": "Пол",
+        "is_neutered": "Кастрирован",
+        "goal": "Цель",
+    }
+    known_lines = []
+    for key, label in field_labels.items():
         val = collected.get(key)
-        result = result.replace(f"{{{key}}}", str(val) if val is not None else "null")
+        if val is not None and val != "" and val != "null":
+            known_lines.append(f"{label}: {val}")
 
-    # Hint склонений клички
-    pet_name = collected.get("pet_name", "")
-    if pet_name:
-        result += (
-            f"\nСКЛОНЕНИЕ КЛИЧКИ '{pet_name}':\n"
-            f"Всегда склоняй по правилам русского языка.\n"
-            f"Примеры: Рекс->Рекса/Рексу/Рексом, Мурка->Мурки/Мурке/Муркой, "
-            f"Себастьян->Себастьяна/Себастьяну/Себастьяном\n"
-        )
+    known_fields = "\n".join(known_lines) if known_lines else "пока ничего не известно"
 
-    # Передаём важные внутренние флаги
-    context_flags = []
+    # Контекст для Gemini — внутренние флаги
+    context_notes = []
     if collected.get("_breed_unknown"):
-        context_flags.append("Пользователь не знает породу")
+        context_notes.append("Пользователь не знает породу.")
     if collected.get("_concern_heard"):
-        context_flags.append("Пользователь рассказал о тревоге — в финале вернуться к ней")
+        context_notes.append("Пользователь рассказал о тревоге — в финале вернись к ней.")
     if collected.get("_breed_clarification_options"):
         opts = ", ".join(collected["_breed_clarification_options"])
-        context_flags.append(f"Предложены варианты породы: {opts}")
+        context_notes.append(f"Предложены варианты породы: {opts}")
 
-    # Блок текущего шага и кнопок
-    step_context = f"\n\nТЕКУЩИЙ ШАГ: {current_step}\n"
-    if context_flags:
-        step_context += "КОНТЕКСТ:\n" + "\n".join(f"- {f}" for f in context_flags) + "\n"
+    # Кнопки которые увидит пользователь
     if quick_replies:
-        buttons_text = " | ".join([qr["label"] for qr in quick_replies])
-        step_context += f"КНОПКИ КОТОРЫЕ УВИДИТ ПОЛЬЗОВАТЕЛЬ: [{buttons_text}]\n"
-        step_context += "Напиши текст который естественно подводит к этим кнопкам.\n"
+        labels = " | ".join(qr["label"] for qr in quick_replies)
+        buttons_line = f"\nКНОПКИ: [{labels}]\nПиши текст который ведёт именно к этим кнопкам."
     else:
-        step_context += "Кнопок нет — пользователь отвечает текстом.\n"
-    step_context += (
-        "ПРАВИЛО: пиши ТОЛЬКО про текущий шаг. "
-        "Не упоминай следующие шаги. Один вопрос."
-    )
-    result += step_context
+        buttons_line = "\nКнопок нет — пользователь отвечает текстом."
+
+    # Склонение клички
+    pet_name = collected.get("pet_name", "")
+    declension = f"\nСклоняй кличку '{pet_name}' правильно по-русски." if pet_name else ""
+
+    # Собираем промпт
+    result = _CHARACTER_TEXT.strip()
+    result += "\n\n---\n"
+    result += f"Сегодня: {today}\n"
+    result += f"\nУЖЕ ИЗВЕСТНО:\n{known_fields}\n"
+
+    if context_notes:
+        result += "\nКОНТЕКСТ:\n" + "\n".join(f"- {n}" for n in context_notes) + "\n"
+
+    result += f"\nТВОЯ ЗАДАЧА СЕЙЧАС:\n{step_instruction}"
+    result += buttons_line
+    result += declension
+    result += "\n\nМАКСИМУМ 3 предложения. Один вопрос."
 
     return result
+
+
+# ── Stop-phrase filter ─────────────────────────────────────────────────────────
+
+def _remove_stop_phrases(text: str) -> str:
+    """Удаляет стоп-слова из начала ответа Gemini."""
+    stop_starts = [
+        r'^Я понял[,\.]?\s*',
+        r'^Понял[,\.]?\s*',
+        r'^Отлично[,\.]?\s*',
+        r'^Хорошо[,\.]?\s*',
+        r'^Ясно[,\.]?\s*',
+        r'^Замечательно[,\.]?\s*',
+        r'^Прекрасно[,\.]?\s*',
+        r'^Зафиксировал[,\.]?\s*',
+        r'^Конечно[,\.]?\s*',
+    ]
+    for pattern in stop_starts:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+    return text
 
 
 # ── Fallback text ──────────────────────────────────────────────────────────────
@@ -1237,7 +1245,7 @@ def handle_onboarding_ai(
                 gemini_history.append({"role": role, "parts": [{"text": content}]})
 
         chat = client.chats.create(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
             ),
@@ -1245,6 +1253,7 @@ def handle_onboarding_ai(
         )
         response = chat.send_message(actual_message or "Начни онбординг")
         ai_text = (response.text or "").strip()
+        ai_text = _remove_stop_phrases(ai_text)
     except Exception as e:
         logger.error("[gemini_call] %s", e)
         ai_text = "Что-то пошло не так. Попробуй ещё раз."
