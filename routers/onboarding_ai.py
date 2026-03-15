@@ -361,19 +361,21 @@ def _get_step_instruction(step: str, collected: dict) -> str:
         ),
 
         "breed": (
-            'РАЗРЕШЕНО: попросить написать название породы. Одно предложение.\n'
-            'ЗАПРЕЩЕНО: снова спрашивать о породе развёрнуто, предлагать фото.\n'
-            'ПРИМЕР: "Напиши название — внесу в карточку."'
-            if collected.get("_awaiting_breed_text")
+            f'РАЗРЕШЕНО: сказать что ждёшь фото питомца.\n'
+            f'ЗАПРЕЩЕНО: спрашивать что-либо ещё.\n'
+            f'МАКСИМУМ: 1 предложение.\n'
+            f'ПРИМЕР: "Жду фото — отправь прямо сюда."'
+            if collected.get("_breed_photo_requested")
             else
-            f'РАЗРЕШЕНО: предложить сфотографировать для определения породы или выбрать Метис.\n'
-            f'ЗАПРЕЩЕНО: спрашивать возраст, пол, дату рождения.\n'
+            f'РАЗРЕШЕНО: предложить сфотографировать питомца — ты определишь породу по фото.\n'
+            f'ЗАПРЕЩЕНО: сразу называть Метисом, спрашивать другие данные.\n'
             f'МАКСИМУМ: 2 предложения.\n'
-            f'ПРИМЕР: "Сфотографируй — определю по фото. Или выбери Метис."'
+            f'ПРИМЕР: "Сфотографируй {pet_name} — я определю породу по фото. '
+            f'Или пропусти, запишем как Метис."'
             if collected.get("_breed_unknown")
             else
-            f'РАЗРЕШЕНО: спросить название породы {pet_name}.\n'
-            f'ЗАПРЕЩЕНО: предлагать сфотографировать сразу, спрашивать возраст или пол.\n'
+            f'РАЗРЕШЕНО: спросить название породы {pet_name}. Если метис — тоже хорошо.\n'
+            f'ЗАПРЕЩЕНО: предлагать кнопки фото, спрашивать возраст или пол.\n'
             f'МАКСИМУМ: 1 предложение.\n'
             f'ПРИМЕР ДЛЯ СОБАКИ: "Какая порода у {pet_name}? Если метис — тоже скажи."\n'
             f'ПРИМЕР ДЛЯ КОШКИ: "Какая порода у {pet_name}? Если беспородная — тоже скажи."'
@@ -401,7 +403,14 @@ def _get_step_instruction(step: str, collected: dict) -> str:
                 f'РАЗРЕШЕНО: спросить дату рождения или примерный возраст.\n'
                 f'ЗАПРЕЩЕНО: спрашивать пол, кастрацию, аватар.\n'
                 f'МАКСИМУМ: 2 предложения.\n'
-                f'ПРИМЕР: "Когда родился {pet_name}? Если не знаешь — примерный возраст или пропустим."'
+                f'ПРИМЕР: "Когда родился {pet_name}? Если не знаешь точно — примерный возраст или пропустим."\n'
+                f'ЕСЛИ ПОЛЬЗОВАТЕЛЬ НАПИСАЛ ДАТУ: вычисли точный возраст от сегодня, '
+                f'скажи сколько лет и месяцев, добавь живой комментарий.\n'
+                f'Примеры реакции на дату:\n'
+                f'"6 лет и 2 месяца — уже взрослый, в самом расцвете."\n'
+                f'"7 месяцев — совсем малыш ещё."\n'
+                f'"Почти 2 года — самый активный возраст."\n'
+                f'НИКОГДА не пиши просто дату без комментария про возраст.'
             )
         ),
 
@@ -417,6 +426,12 @@ def _get_step_instruction(step: str, collected: dict) -> str:
                 f'КЛИЧКА ЯВНО ЖЕНСКАЯ. ПРИМЕР: "{pet_name} — девочка?"'
                 if (collected.get("pet_name") or "").lower() in _FEMALE_NAMES or
                    (collected.get("pet_name") or "").lower() in _CAT_NAMES
+                else
+                f'КЛИЧКА ЯВНО МУЖСКАЯ. ПРИМЕР: "{pet_name} — мальчик?"'
+                if collected.get("_detected_gender_hint") == "male"
+                else
+                f'КЛИЧКА ЯВНО ЖЕНСКАЯ. ПРИМЕР: "{pet_name} — девочка?"'
+                if collected.get("_detected_gender_hint") == "female"
                 else
                 f'КЛИЧКА НЕЙТРАЛЬНАЯ. ПРИМЕР: "{pet_name} — мальчик или девочка?"'
             )
@@ -569,14 +584,13 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
 
         "breed": (
             []
-            if collected.get("_awaiting_breed_text")
+            if collected.get("_breed_photo_requested")
             else [
-                {"label": "Сфотографировать", "value": "BREED_PHOTO", "preferred": True},
-                {"label": "Метис / Не знаю", "value": "Не знаю породу", "preferred": False},
+                {"label": "Загрузить фото", "value": "BREED_PHOTO", "preferred": True},
+                {"label": "Пропустить", "value": "Пропустить породу", "preferred": False},
             ]
             if collected.get("_breed_unknown")
             else [
-                {"label": "Знаю породу", "value": "Знаю породу", "preferred": True},
                 {"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False},
             ]
         ),
@@ -588,8 +602,8 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
                 {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
             ]
             if collected.get("_age_approximate")
-            else
-            [
+            else [
+                {"label": "Знаю дату рождения", "value": "Знаю дату рождения", "preferred": True},
                 {"label": "Примерный возраст", "value": "Примерный возраст", "preferred": False},
                 {"label": "Не знаю", "value": "Не знаю возраст", "preferred": False},
             ]
@@ -603,7 +617,7 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
         ],
 
         "avatar": [
-            {"label": "Сфотографировать", "value": "AVATAR_PHOTO", "preferred": True},
+            {"label": "Загрузить фото", "value": "AVATAR_PHOTO", "preferred": True},
             {"label": "Пропустить", "value": "Пропустить", "preferred": False},
         ],
     }
@@ -807,42 +821,35 @@ def _parse_user_input(message: str, step: str, collected: dict, client=None) -> 
             updates["_passport_photo_requested"] = True
 
     elif step == "breed":
-        # 1. Кнопка "Знаю породу"
-        if msg_lower == "знаю породу":
-            updates["_awaiting_breed_text"] = True
+        # Кнопка "Не знаю породу" — предложить фото
+        if msg_lower in ["не знаю породу", "не знаю"]:
+            updates["_breed_unknown"] = True
 
-        # 2. Кнопка "Не знаю породу" или "Метис / Не знаю"
-        elif msg_lower in ["не знаю породу", "метис / не знаю"]:
-            if collected.get("_breed_unknown"):
-                # Второй раз — записываем Метис
-                updates["breed"] = "Метис"
-                updates.pop("_breed_unknown", None)
-            else:
-                # Первый раз — показать кнопки фото
-                updates["_breed_unknown"] = True
-
-        # 3. Кнопка фото — фронт открывает камеру, OCR обработается отдельно
+        # Кнопка "Сфотографировать" — фронт откроет камеру
         elif msg == "BREED_PHOTO":
-            pass
+            updates["_breed_photo_requested"] = True
+
+        # Кнопка "Пропустить породу" — записываем Метис
+        elif msg_lower == "пропустить породу":
+            updates["breed"] = "Метис"
+            updates.pop("_breed_unknown", None)
 
         else:
-            # 4. Пользователь написал название породы
-            # 4a. Проверяем _BREED_CATEGORIES
+            # Пользователь написал название породы
+            # Проверяем категории
             found_category = False
             for keyword, category in _BREED_CATEGORIES.items():
                 if keyword in msg_lower:
                     updates["_breed_category"] = category
-                    updates.pop("_awaiting_breed_text", None)
                     found_category = True
                     break
 
             if not found_category:
-                # 4b. rapidfuzz
+                # rapidfuzz
                 match = fuzz_process.extractOne(msg, ALL_BREEDS, scorer=fuzz.WRatio, score_cutoff=80)
                 if match:
                     breed_name = match[0]
                     breed_lower = breed_name.lower()
-                    # Проверяем есть ли у найденной породы подкатегория
                     has_subcategory = False
                     for keyword, category in _BREED_CATEGORIES.items():
                         if keyword in breed_lower:
@@ -851,12 +858,8 @@ def _parse_user_input(message: str, step: str, collected: dict, client=None) -> 
                             break
                     if not has_subcategory:
                         updates["breed"] = breed_name
-                    updates.pop("_awaiting_breed_text", None)
-
-                # 4c. Ничего не нашли — записываем как есть
                 else:
                     updates["breed"] = msg.strip().capitalize()
-                    updates.pop("_awaiting_breed_text", None)
 
     elif step == "breed_subcategory":
         if "другая" in msg_lower or "другой" in msg_lower:
@@ -876,7 +879,7 @@ def _parse_user_input(message: str, step: str, collected: dict, client=None) -> 
         # Всегда отмечаем что breed insight показан
         updates["_breed_insight_shown"] = True
 
-        if msg_lower in ["знаю дату", "введу дату"]:
+        if msg_lower in ["знаю дату рождения", "знаю дату", "введу дату"]:
             updates["_wants_date_picker"] = True
         else:
             # При любом другом вводе — сбрасываем флаг DatePicker
@@ -891,6 +894,7 @@ def _parse_user_input(message: str, step: str, collected: dict, client=None) -> 
                 if parsed:
                     updates.update(parsed)
                     updates.pop("_age_approximate", None)
+                    updates["_wants_date_picker"] = False
 
     elif step == "gender":
         if any(w in msg_lower for w in ["мальчик", "самец", "пёс", "кобель"]):
@@ -1258,6 +1262,13 @@ def handle_onboarding_ai(
             })
 
     # 7. Get step instruction and quick replies
+    if current_step == "gender":
+        pet_name_val = collected.get("pet_name", "")
+        name_lower = pet_name_val.lower()
+        if (name_lower not in _MALE_NAMES and name_lower not in _DOG_NAMES and
+            name_lower not in _FEMALE_NAMES and name_lower not in _CAT_NAMES):
+            collected["_detected_gender_hint"] = _detect_name_gender(pet_name_val, client)
+
     step_instruction = _get_step_instruction(current_step, collected)
     quick_replies = override_quick_replies or _get_step_quick_replies(current_step, collected, client)
 
@@ -1299,6 +1310,6 @@ def handle_onboarding_ai(
         "onboarding_phase": "collecting",
         "pet_id": None,
         "pet_card": None,
-        "input_type": "date_picker" if current_step == "birth_date" and not collected.get("_age_approximate") else "text",
+        "input_type": "date_picker" if collected.get("_wants_date_picker") else "text",
         "collected": collected,
     })
