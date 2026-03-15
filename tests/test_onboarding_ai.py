@@ -155,6 +155,7 @@ def test_complete_creates_pet():
         "is_neutered": "Да",
         "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
+        "_passport_skipped": True,
     }
     resp = _run("Нет, не кастрирован", collected=full_collected, gemini_payload={
         "text": "Карточка Рекса готова.",
@@ -180,6 +181,7 @@ def test_completion_auto_detected():
         "is_neutered": "Да",
         "goal": "Прививки и плановое",
         "_avatar_skipped": True,
+        "_passport_skipped": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Мурка стерилизована.",
@@ -204,6 +206,7 @@ def test_pet_card_on_completion():
         "is_neutered": "Да",
         "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
+        "_passport_skipped": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Карточка готова.",
