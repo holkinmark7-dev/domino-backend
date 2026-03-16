@@ -1172,6 +1172,8 @@ def _save_user_message(user_id: str, text: str) -> str | None:
 # ── Pet card & completion text ─────────────────────────────────────────────────
 
 def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -> dict:
+    # NOTE: Временно не вызывается (pet_card=None в complete).
+    # Сохранена для будущего walkthrough компонента. Не удалять.
     """Build pet card dict for UI response."""
     species_raw = (collected.get("species") or "").lower()
     species_display = "Кошка" if "cat" in species_raw or "кош" in species_raw or "кот" in species_raw else "Собака"
@@ -1396,7 +1398,7 @@ def handle_onboarding_ai(
             user_flags["onboarding_pet_id"] = pet_id
             update_user_flags(user_id, user_flags)
 
-            pet_card = _build_pet_card(collected, pet_id, short_id)
+            pet_card = None  # TODO: заменить на walkthrough
             ai_text = _build_completion_text(collected)
             _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
 

@@ -214,11 +214,8 @@ def test_pet_card_on_completion():
         "collected": {},
         "status": "complete",
     })
-    assert resp["pet_card"] is not None
-    card = resp["pet_card"]
-    assert card["name"] == "Барсик"
-    assert card["species"] == "Кошка"
-    assert card["breed"] == "Сфинкс"
+    # pet_card disabled — preparing for walkthrough
+    assert resp["pet_card"] is None
 
 
 # ── Test 8: Passport OCR data applied to collected ────────────────────────────
