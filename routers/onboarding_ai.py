@@ -1086,7 +1086,9 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── avatar ───
     elif step == "avatar":
-        logger.info("[ONB] avatar parse: raw='%s' low='%s'", raw, low)
+        logger.info("[ONB] avatar parse: raw='%s' low='%s' clean='%s' matches=%s",
+                     raw, low, clean,
+                     [w for w in ["пропустить", "пропуск", "потом", "позже", "не сейчас", "скип", "нет", "не хочу"] if w in low])
         if raw == "AVATAR_PHOTO":
             pass
         elif any(w in low for w in [
@@ -1334,6 +1336,9 @@ def handle_onboarding_ai(
 
     # 2. Handle special inputs (OCR, breed detection, avatar)
     actual_message = message_text
+    logger.info("[ONB] === NEW REQUEST === msg='%s' passport=%s breed=%s",
+                message_text[:80] if message_text else "EMPTY",
+                bool(passport_ocr_data), bool(breed_detection_data))
     api_key = os.environ.get("GEMINI_API_KEY", "")
     client = genai.Client(api_key=api_key)
 
@@ -1462,6 +1467,12 @@ def handle_onboarding_ai(
             update_user_flags(user_id, user_flags)
         except Exception as e:
             logger.error("[ONB] owner_name save: %s", e)
+
+    logger.info("[ONB] === COMPLETE CHECK === step=%s avatar_url=%s avatar_skipped=%s all_fields=%s",
+                current_step,
+                collected.get("avatar_url"),
+                collected.get("_avatar_skipped"),
+                {k: (v if not k.startswith("_") else "...") for k, v in collected.items() if v is not None and v != ""})
 
     # 10. Check completion — early return without Gemini
     if current_step == "complete":
