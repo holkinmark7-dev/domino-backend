@@ -963,7 +963,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         clarify = _BREED_CLARIFICATIONS.get(clean)
         if not clarify:
             for key in _BREED_CLARIFICATIONS:
-                if clean.startswith(key) or key.startswith(clean):
+                if key.startswith(clean) and len(clean) >= 3:
                     clarify = _BREED_CLARIFICATIONS[key]
                     break
         if clarify:
@@ -980,11 +980,9 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 best_match = breed_name
 
         if best_score >= 85 and best_match:
-            match_lower = best_match.lower()
-            for key in _BREED_CLARIFICATIONS:
-                if key in match_lower or match_lower.startswith(key):
-                    updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[key]
-                    return updates
+            if low in _BREED_CLARIFICATIONS:
+                updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[low]
+                return updates
             updates["breed"] = best_match
             return updates
 
@@ -993,10 +991,9 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             result = _parse_breed_with_gemini(raw, collected.get("species", "dog"), client)
             if result.get("breed"):
                 breed_low = result["breed"].lower()
-                for key in _BREED_CLARIFICATIONS:
-                    if key in breed_low or breed_low.startswith(key):
-                        updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[key]
-                        return updates
+                if breed_low in _BREED_CLARIFICATIONS:
+                    updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[breed_low]
+                    return updates
                 updates["breed"] = result["breed"]
             elif result.get("needs_clarification") and result.get("options"):
                 updates["_breed_clarification_options"] = result["options"]
@@ -1391,7 +1388,7 @@ def handle_onboarding_ai(
                     "pet_id": None,
                     "pet_card": None,
                     "input_type": "text",
-                    "collected": collected,
+                    "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
                 })
         else:
             actual_message = "Не удалось определить породу по фото."
@@ -1453,6 +1450,17 @@ def handle_onboarding_ai(
     user_flags["onboarding_collected"] = collected
     update_user_flags(user_id, user_flags)
 
+    # 9a. Сразу записать owner_name в users — для MoreScreen
+    if collected.get("owner_name") and not user_flags.get("_owner_name_saved"):
+        try:
+            supabase.table("users").update(
+                {"owner_name": collected["owner_name"]}
+            ).eq("id", user_id).execute()
+            user_flags["_owner_name_saved"] = True
+            update_user_flags(user_id, user_flags)
+        except Exception as e:
+            logger.error("[ONB] owner_name save: %s", e)
+
     # 10. Check completion — early return without Gemini
     if current_step == "complete":
         create_result = _create_pet(user_id, collected)
@@ -1473,7 +1481,7 @@ def handle_onboarding_ai(
                 "pet_id": pet_id,
                 "pet_card": pet_card,
                 "input_type": "text",
-                "collected": collected,
+                "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
             })
 
     # === DatePicker early return — НЕ вызываем AI ===
@@ -1488,7 +1496,7 @@ def handle_onboarding_ai(
             "pet_id": None,
             "pet_card": None,
             "input_type": "date_picker",
-            "collected": collected,
+            "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
         })
 
     # 11. Compute quick replies (once)
@@ -1551,5 +1559,5 @@ def handle_onboarding_ai(
         "pet_id": None,
         "pet_card": None,
         "input_type": input_type,
-        "collected": collected,
+        "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
     })
