@@ -79,8 +79,44 @@ _NEUTRAL_NAMES = {
     "пушок", "бублик", "рыжик", "малыш", "крошка",
 }
 
-_POPULAR_DOG_BREEDS = ["Лабрадор", "Овчарка", "Йорк", "Метис"]
-_POPULAR_CAT_BREEDS = ["Британская", "Мейн-кун", "Шотландская", "Беспородная"]
+_POPULAR_DOG_BREEDS = [
+    "Лабрадор", "Овчарка", "Йорк", "Шпиц", "Такса",
+    "Хаски", "Французский бульдог", "Корги", "Чихуахуа",
+    "Метис", "Другая порода", "Не знаю породу",
+]
+_POPULAR_CAT_BREEDS = [
+    "Британская", "Шотландская", "Мейн-кун", "Сфинкс",
+    "Персидская", "Бенгальская", "Сиамская", "Русская голубая",
+    "Абиссинская", "Беспородная", "Другая порода", "Не знаю породу",
+]
+
+_BREED_CLARIFICATIONS = {
+    "овчарка": [
+        "Немецкая овчарка", "Бельгийская малинуа", "Кавказская овчарка",
+        "Среднеазиатская овчарка", "Австралийская овчарка", "Швейцарская овчарка",
+    ],
+    "йорк": ["Йоркширский терьер", "Бивер-йорк"],
+    "шпиц": ["Померанский шпиц", "Немецкий шпиц", "Японский шпиц", "Финский шпиц"],
+    "бульдог": ["Французский бульдог", "Английский бульдог", "Американский бульдог"],
+    "такса": ["Стандартная такса", "Миниатюрная такса", "Кроличья такса"],
+    "пудель": ["Той-пудель", "Карликовый пудель", "Малый пудель", "Королевский пудель"],
+    "терьер": [
+        "Джек-рассел-терьер", "Стаффордширский терьер", "Эрдельтерьер",
+        "Вест-хайленд-уайт-терьер", "Скотч-терьер",
+    ],
+    "ретривер": ["Лабрадор-ретривер", "Золотистый ретривер", "Прямошёрстный ретривер"],
+    "спаниель": ["Кокер-спаниель", "Кавалер-кинг-чарльз-спаниель", "Спрингер-спаниель"],
+    "дог": ["Немецкий дог", "Аргентинский дог", "Бордоский дог"],
+    "пинчер": ["Доберман", "Цвергпинчер", "Немецкий пинчер"],
+    "лайка": ["Западно-сибирская лайка", "Восточно-сибирская лайка", "Русско-европейская лайка"],
+    "сеттер": ["Ирландский сеттер", "Английский сеттер", "Шотландский сеттер"],
+    "борзая": ["Русская псовая борзая", "Грейхаунд", "Уиппет", "Левретка"],
+    "колли": ["Шотландская колли", "Бордер-колли", "Шелти"],
+    "британская": ["Британская короткошёрстная", "Британская длинношёрстная"],
+    "шотландская": ["Скоттиш-фолд", "Скоттиш-страйт", "Хайленд-фолд", "Хайленд-страйт"],
+    "сфинкс": ["Канадский сфинкс", "Донской сфинкс", "Петерболд"],
+    "персидская": ["Персидская классическая", "Экзотическая короткошёрстная"],
+}
 
 
 # ── Declension helper ─────────────────────────────────────────────────────────
@@ -311,9 +347,7 @@ def _get_current_step(collected: dict) -> str:
     if not collected.get("goal"):
         return "goal"
 
-    # Тревога — дать высказаться
-    if collected.get("goal") == "Есть тревога" and not collected.get("_concern_heard"):
-        return "concern"
+    # concern УБРАН — тревога обрабатывается в финале
 
     # Вид — если не определён через угадывание
     if not collected.get("species"):
@@ -387,8 +421,7 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
             {"label": "Кое-что беспокоит", "value": "Кое-что беспокоит", "preferred": False},
         ]
 
-    if step == "concern":
-        return []
+    # concern УБРАН
 
     if step == "species":
         return [
@@ -417,17 +450,17 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
             opts = collected["_breed_clarification_options"]
             qr = [
                 {"label": o, "value": o, "preferred": i == 0}
-                for i, o in enumerate(opts[:4])
+                for i, o in enumerate(opts[:6])
             ]
             qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
             return qr
         if collected.get("_awaiting_breed_text"):
             return []
         popular = _POPULAR_DOG_BREEDS if species == "dog" else _POPULAR_CAT_BREEDS
-        qr = [{"label": b, "value": b, "preferred": False} for b in popular]
-        qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
-        qr.append({"label": "Не знаю породу", "value": "Не знаю породу", "preferred": False})
-        return qr
+        return [
+            {"label": b, "value": b, "preferred": False}
+            for b in popular
+        ]
 
     if step == "birth_date":
         if collected.get("_age_approximate"):
@@ -487,7 +520,6 @@ def _get_step_instruction(step: str, collected: dict) -> str:
 
     pet_gen = _decline_pet_name(pet, "gen")
     pet_dat = _decline_pet_name(pet, "dat")
-    pet_inst = _decline_pet_name(pet, "inst")
 
     if step == "owner_name":
         return (
@@ -497,44 +529,41 @@ def _get_step_instruction(step: str, collected: dict) -> str:
 
     if step == "pet_name":
         return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{owner} — и кто же у тебя живёт?"\n'
-            f"ЗАПРЕЩЕНО: 'Приятно познакомиться', отдельное приветствие, два предложения."
+            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{owner}, как зовут питомца?"\n'
+            f"ЗАПРЕЩЕНО: 'Приятно познакомиться', два предложения, любые другие вопросы."
         )
 
     if step == "species_guess_dog":
         return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "Ставлю на собаку — угадал?"\n'
-            f"ЗАПРЕЩЕНО: порода, возраст, пол, любые другие вопросы."
+            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{pet} — ставлю на собаку. Угадал?"\n'
+            f"ЗАПРЕЩЕНО: порода, возраст, пол."
         )
 
     if step == "species_guess_cat":
         return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "Ставлю на кота — угадал?"\n'
-            f"ЗАПРЕЩЕНО: порода, возраст, пол, любые другие вопросы."
+            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{pet} — ставлю на кота. Угадал?"\n'
+            f"ЗАПРЕЩЕНО: порода, возраст, пол."
         )
 
     if step == "goal":
         return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{pet_dat} повезло — ты рядом. Чем могу помочь?"\n'
+            f'Скажи РОВНО ЭТОТ ТЕКСТ: "{pet_dat} повезло с хозяином. Чем могу помочь?"\n'
             f"ЗАПРЕЩЕНО: вид, порода, возраст, пол, 'С чего начнём'."
         )
 
-    if step == "concern":
-        return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "Расскажи. Что происходит с {pet_inst}?"\n'
-            f"ЗАПРЕЩЕНО: советы, уточнения, предложения решений."
-        )
+    # concern УБРАН
 
     if step == "species":
-        if collected.get("_concern_heard"):
-            return (
-                f'Скажи РОВНО ЭТОТ ТЕКСТ: "Чтобы разобраться — нужна пара вопросов. Кошка или собака?"\n'
-                f"ЗАПРЕЩЕНО: порода, возраст, пол."
-            )
+        goal = collected.get("goal", "")
         if collected.get("_exotic_attempt"):
             return (
                 f'Скажи РОВНО ЭТОТ ТЕКСТ: "Пока работаю только с кошками и собаками. Кошка или собака есть?"\n'
                 f"ЗАПРЕЩЕНО: любые другие темы."
+            )
+        if goal == "Есть тревога":
+            return (
+                f'Скажи РОВНО ЭТОТ ТЕКСТ: "Чтобы разобраться — пара вопросов. Кошка или собака?"\n'
+                f"ЗАПРЕЩЕНО: порода, возраст, пол."
             )
         return (
             f'Скажи РОВНО ЭТОТ ТЕКСТ: "Кошка или собака?"\n'
@@ -584,11 +613,11 @@ def _get_step_instruction(step: str, collected: dict) -> str:
                 f"Начни с ОДНОГО короткого интересного факта о породе {breed} (максимум 8 слов). "
                 f'Потом спроси: "Когда родился {pet}?"\n'
                 f"ЗАПРЕЩЕНО: пол, кастрация, второй вопрос.\n"
-                f'ПРИМЕР: "Сенбернары — добродушные гиганты. Когда родился {pet}?"'
+                f'ПРИМЕР: "Йорки — маленькие с характером на большую собаку. Когда родился {pet}?"'
             )
         if collected.get("_age_approximate"):
             return (
-                f'Скажи РОВНО ЭТОТ ТЕКСТ: "Сколько примерно лет {pet_dat}?"\n'
+                f'Скажи РОВНО ЭТОТ ТЕКСТ: "Сколько примерно — в годах или месяцах?"\n'
                 f"ЗАПРЕЩЕНО: любые другие вопросы."
             )
         return (
@@ -601,15 +630,17 @@ def _get_step_instruction(step: str, collected: dict) -> str:
         age = collected.get("age_years")
         if age is not None and not collected.get("_age_reacted"):
             if age < 1:
-                age_reaction = "Совсем малыш — только начинается. "
-            elif age <= 3:
-                age_reaction = "В самом расцвете сил. "
-            elif age <= 7:
-                age_reaction = f"{int(age)} — лучший возраст. "
-            elif age <= 10:
-                age_reaction = "Взрослый, умный, знает чего хочет. "
+                age_reaction = "Совсем малыш ещё. "
+            elif age <= 2:
+                age_reaction = "Энергии на десятерых. "
+            elif age <= 5:
+                age_reaction = "Золотые годы — сил полно, характер сложился. "
+            elif age <= 8:
+                age_reaction = "Зрелый, спокойный, знает чего хочет. "
+            elif age <= 11:
+                age_reaction = "Мудрый. Такие всё понимают без слов. "
             else:
-                age_reaction = f"{int(age)} лет — это опыт и мудрость. "
+                age_reaction = "Столько лет вместе — это настоящая история. "
 
         if hint == "male":
             return (
@@ -635,7 +666,7 @@ def _get_step_instruction(step: str, collected: dict) -> str:
 
     if step == "avatar":
         return (
-            f'Скажи РОВНО ЭТОТ ТЕКСТ: "И последнее — фото {pet_gen}. Мордашка для профиля."\n'
+            f'Скажи РОВНО ЭТОТ ТЕКСТ: "Последний штрих — фото {pet_gen} для профиля."\n'
             f"ЗАПРЕЩЕНО: любые другие вопросы."
         )
 
@@ -758,21 +789,21 @@ def _remove_stop_phrases(text: str) -> str:
 def _get_fallback_text(step: str, collected: dict) -> str:
     pet = collected.get("pet_name", "питомец")
     pet_gen = _decline_pet_name(pet, "gen")
+    pet_dat = _decline_pet_name(pet, "dat")
     owner = collected.get("owner_name", "")
     fallbacks = {
         "owner_name": "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?",
-        "pet_name": f"{owner} — и кто же у тебя живёт?" if owner else "Как зовут питомца?",
-        "species_guess_dog": "Ставлю на собаку — угадал?",
-        "species_guess_cat": "Ставлю на кота — угадал?",
-        "goal": f"Чем могу помочь с {pet}?",
-        "concern": f"Расскажи что происходит с {pet}.",
+        "pet_name": f"{owner}, как зовут питомца?" if owner else "Как зовут питомца?",
+        "species_guess_dog": f"{pet} — ставлю на собаку. Угадал?",
+        "species_guess_cat": f"{pet} — ставлю на кота. Угадал?",
+        "goal": f"{pet_dat} повезло с хозяином. Чем могу помочь?",
         "species": "Кошка или собака?",
         "passport_offer": "Если есть ветпаспорт — просто сфотографируй. Сам всё перенесу.",
         "breed": f"Какая порода у {pet_gen}?",
         "birth_date": f"Когда родился {pet}?",
         "gender": f"{pet} — мальчик или девочка?",
         "is_neutered": f"{pet} кастрирован?",
-        "avatar": f"Фото {pet_gen} для профиля.",
+        "avatar": f"Последний штрих — фото {pet_gen} для профиля.",
     }
     return fallbacks.get(step, f"Расскажи мне про {pet}.")
 
@@ -869,10 +900,10 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 break
         if not updates.get("goal") and len(raw) > 2:
             updates["goal"] = raw
+        if updates.get("goal") == "Есть тревога":
+            updates["_concern_heard"] = True
 
-    # ─── concern ───
-    elif step == "concern":
-        updates["_concern_heard"] = True
+    # ─── concern УБРАН ───
 
     # ─── species ───
     elif step == "species":
@@ -927,6 +958,19 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         if any(w in low for w in metis_words):
             updates["breed"] = "Метис"
             return updates
+
+        # === УРОВЕНЬ 0: Словарь подвидов ===
+        clarify = _BREED_CLARIFICATIONS.get(clean)
+        if not clarify:
+            for key in _BREED_CLARIFICATIONS:
+                if clean.startswith(key) or key.startswith(clean):
+                    clarify = _BREED_CLARIFICATIONS[key]
+                    break
+        if clarify:
+            updates["_breed_clarification_options"] = clarify
+            return updates
+
+        # === УРОВЕНЬ 1: Rapidfuzz (порог 85%) ===
         best_match = None
         best_score = 0
         for breed_name in ALL_BREEDS:
@@ -934,11 +978,25 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             if score > best_score:
                 best_score = score
                 best_match = breed_name
-        if best_score >= 80 and best_match:
+
+        if best_score >= 85 and best_match:
+            match_lower = best_match.lower()
+            for key in _BREED_CLARIFICATIONS:
+                if key in match_lower or match_lower.startswith(key):
+                    updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[key]
+                    return updates
             updates["breed"] = best_match
-        elif client:
+            return updates
+
+        # === УРОВЕНЬ 2: AI парсинг ===
+        if client:
             result = _parse_breed_with_gemini(raw, collected.get("species", "dog"), client)
             if result.get("breed"):
+                breed_low = result["breed"].lower()
+                for key in _BREED_CLARIFICATIONS:
+                    if key in breed_low or breed_low.startswith(key):
+                        updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[key]
+                        return updates
                 updates["breed"] = result["breed"]
             elif result.get("needs_clarification") and result.get("options"):
                 updates["_breed_clarification_options"] = result["options"]
@@ -964,10 +1022,14 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             try:
                 bd = date(int(year), int(month), int(day))
                 today = date.today()
-                if bd > today or (today.year - bd.year) > 30:
+                if bd > today:
+                    return {}
+                if (today.year - bd.year) > 30:
                     return {}
                 updates["birth_date"] = f"{year}-{month}-{day}"
-                age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+                age = today.year - bd.year - (
+                    (today.month, today.day) < (bd.month, bd.day)
+                )
                 updates["age_years"] = age
             except (ValueError, TypeError):
                 return {}
@@ -981,23 +1043,20 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 if bd > today or (today.year - bd.year) > 30:
                     return {}
                 updates["birth_date"] = f"{year}-{month}-{day}"
-                age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+                age = today.year - bd.year - (
+                    (today.month, today.day) < (bd.month, bd.day)
+                )
                 updates["age_years"] = age
             except (ValueError, TypeError):
                 return {}
             return updates
         age_result = _parse_age(raw)
-        if age_result.get("parsed"):
-            if age_result.get("age_years") is not None:
-                updates["age_years"] = age_result["age_years"]
-            if age_result.get("birth_date"):
-                updates["birth_date"] = age_result["birth_date"]
+        if age_result:
+            updates.update(age_result)
         elif client:
             age_result = _parse_age_with_gemini(raw, client)
-            if age_result.get("age_years") is not None:
-                updates["age_years"] = age_result["age_years"]
-            elif age_result.get("birth_date"):
-                updates["birth_date"] = age_result["birth_date"]
+            if age_result:
+                updates.update(age_result)
 
     # ─── gender ───
     elif step == "gender":
@@ -1416,6 +1475,21 @@ def handle_onboarding_ai(
                 "collected": collected,
             })
 
+    # === DatePicker early return — НЕ вызываем AI ===
+    if current_step == "birth_date" and collected.get("_wants_date_picker"):
+        user_flags["onboarding_collected"] = collected
+        update_user_flags(user_id, user_flags)
+
+        return JSONResponse(content={
+            "ai_response": "",
+            "quick_replies": [],
+            "onboarding_phase": "collecting",
+            "pet_id": None,
+            "pet_card": None,
+            "input_type": "date_picker",
+            "collected": collected,
+        })
+
     # 11. Compute quick replies (once)
     quick_replies = _get_step_quick_replies(current_step, collected, client)
 
@@ -1455,6 +1529,12 @@ def handle_onboarding_ai(
     # 15. Fallback if empty response
     if not ai_text:
         ai_text = _get_fallback_text(current_step, collected)
+
+    # 15b. Set _age_reacted after gender step uses age reaction
+    if current_step == "gender" and collected.get("age_years") is not None:
+        collected["_age_reacted"] = True
+        user_flags["onboarding_collected"] = collected
+        update_user_flags(user_id, user_flags)
 
     # 16. Save AI response
     _save_ai_message(user_id, ai_text, None, user_chat_id)
