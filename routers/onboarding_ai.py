@@ -1087,6 +1087,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── avatar ───
     elif step == "avatar":
+        logger.info("[ONB] avatar parse: raw='%s' low='%s'", raw, low)
         if raw == "AVATAR_PHOTO":
             pass
         elif any(w in low for w in [
