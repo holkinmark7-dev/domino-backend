@@ -758,6 +758,8 @@ def _build_system_prompt(
         f"Зафиксировал, Конечно, Разумеется, Рад помочь, С чего начнём, "
         f"Хорошо, Приятно познакомиться, Давай начнём\n"
         f"5. НЕ используй имя Dominik вместо клички питомца\n"
+        f"6. Если пользователь написал что-то НЕ по теме (приветствие, вопрос, мусор, ерунда) — "
+        f"мягко верни к текущему вопросу. Не ругай, не объясняй. Просто переспроси.\n"
         f"=========================\n"
         f"\nТВОЯ ЗАДАЧА:\n{step_instruction}"
         f"{btn}\n"
@@ -833,8 +835,8 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             ai = _parse_name_with_gemini(raw, "owner_name", client)
             if ai.get("is_valid") and ai.get("name"):
                 updates["owner_name"] = ai["name"]
-        if not updates.get("owner_name") and len(raw) <= 20:
-            updates["owner_name"] = raw.strip().split()[0].capitalize()
+        # Нет fallback — если не распарсилось, шаг повторится
+        # AI переспросит мягко
 
     # ─── pet_name ───
     elif step == "pet_name":
@@ -850,8 +852,8 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             ai = _parse_name_with_gemini(raw, "pet_name", client)
             if ai.get("is_valid") and ai.get("name"):
                 updates["pet_name"] = ai["name"]
-        if not updates.get("pet_name") and len(raw) <= 30:
-            updates["pet_name"] = raw.strip().split()[0].capitalize()
+        # Нет fallback — если не распарсилось, шаг повторится
+        # AI переспросит мягко
 
     # ─── species_guess_dog ───
     elif step == "species_guess_dog":
