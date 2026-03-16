@@ -8,6 +8,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+import openai
 from google import genai
 from google.genai import types
 from fastapi.responses import JSONResponse
@@ -1344,6 +1345,7 @@ def handle_onboarding_ai(
 
     # 3. First _get_current_step — before parsing
     current_step = _get_current_step(collected)
+    logger.info("[ONB] BEFORE step=%s msg='%s' collected_keys=%s", current_step, actual_message[:50] if actual_message else "", [k for k in collected if not k.startswith("_")])
 
     # 4. If step is gender — compute hint BEFORE everything else
     if current_step == "gender" and not collected.get("_detected_gender_hint"):
@@ -1360,6 +1362,7 @@ def handle_onboarding_ai(
     if actual_message and actual_message == message_text:
         updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
+        logger.info("[ONB] PARSED updates=%s", updates)
 
     # Сброс одноразовых флагов
     if collected.get("birth_date") or collected.get("age_years") or collected.get("_age_skipped"):
@@ -1368,6 +1371,7 @@ def handle_onboarding_ai(
 
     # 6. Second _get_current_step — after parsing
     current_step = _get_current_step(collected)
+    logger.info("[ONB] AFTER step=%s flags=%s", current_step, {k: v for k, v in collected.items() if k.startswith("_")})
 
     # 7. If step changed to gender — compute hint for new step
     if current_step == "gender" and not collected.get("_detected_gender_hint"):
@@ -1423,29 +1427,30 @@ def handle_onboarding_ai(
         collected, step_instruction, current_step, quick_replies
     )
 
-    # 14. Call Gemini — text only, no JSON
+    # 14. Call OpenAI GPT-4o-mini — text only
     try:
+        oai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
         history_rows = _load_chat_history(user_id, limit=20)
-        gemini_history = []
+        oai_messages = [{"role": "system", "content": system_prompt}]
         for row in history_rows:
-            role = "model" if row["role"] == "ai" else "user"
+            role = "assistant" if row["role"] == "ai" else "user"
             content = row.get("message") or ""
             if content:
-                gemini_history.append({"role": role, "parts": [{"text": content}]})
+                oai_messages.append({"role": role, "content": content})
+        oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
 
-        chat = client.chats.create(
-            model="gemini-2.5-flash-lite",
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
-            history=gemini_history,
+        response = oai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=oai_messages,
+            max_tokens=150,
+            temperature=0.3,
         )
-        response = chat.send_message(actual_message or "Начни онбординг")
-        ai_text = (response.text or "").strip()
+        ai_text = (response.choices[0].message.content or "").strip()
         ai_text = _remove_stop_phrases(ai_text)
     except Exception as e:
-        logger.error("[gemini_call] %s", e)
-        ai_text = "Что-то пошло не так. Попробуй ещё раз."
+        logger.error("[oai_call] %s", e)
+        ai_text = ""
 
     # 15. Fallback if empty response
     if not ai_text:
@@ -1456,6 +1461,7 @@ def handle_onboarding_ai(
 
     # 17. Return response
     input_type = "date_picker" if (current_step == "birth_date" and collected.get("_wants_date_picker")) else "text"
+    logger.info("[ONB] RESPONSE step=%s qr=%s input_type=%s ai_text='%s'", current_step, [q["label"] for q in quick_replies], input_type, ai_text[:80] if ai_text else "")
 
     return JSONResponse(content={
         "ai_response": ai_text,

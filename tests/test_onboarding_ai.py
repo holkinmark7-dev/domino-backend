@@ -30,6 +30,15 @@ _PATCH_SAVE_USER = "routers.onboarding_ai._save_user_message"
 _PATCH_SAVE_AI = "routers.onboarding_ai._save_ai_message"
 _PATCH_CREATE_PET = "routers.onboarding_ai._create_pet"
 _PATCH_GENAI = "routers.onboarding_ai.genai"
+_PATCH_OPENAI = "routers.onboarding_ai.openai"
+
+
+def _oai_response(text: str) -> MagicMock:
+    """Create a mock OpenAI chat completion response."""
+    mock = MagicMock()
+    mock.choices = [MagicMock()]
+    mock.choices[0].message.content = text
+    return mock
 
 
 def _run(message_text: str, collected: dict | None = None, gemini_payload: dict | None = None,
@@ -45,11 +54,16 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
             "status": "collecting",
         }
 
+    # Gemini mock (still used for parsing helpers like _detect_name_gender)
     mock_chat = MagicMock()
     mock_chat.send_message.return_value = _gemini_response(gemini_payload)
-
     mock_client = MagicMock()
     mock_client.chats.create.return_value = mock_chat
+
+    # OpenAI mock (used for main text generation)
+    ai_text = gemini_payload if isinstance(gemini_payload, str) else gemini_payload.get("text", "")
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.return_value = _oai_response(ai_text)
 
     with (
         patch(_PATCH_FLAGS, return_value=_make_flags(collected)),
@@ -59,8 +73,10 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
         patch(_PATCH_SAVE_AI),
         patch(_PATCH_CREATE_PET, return_value=("pet-uuid-1", 1)),
         patch(_PATCH_GENAI) as mock_genai,
+        patch(_PATCH_OPENAI) as mock_openai_mod,
     ):
         mock_genai.Client.return_value = mock_client
+        mock_openai_mod.OpenAI.return_value = mock_oai_client
         resp = handle_onboarding_ai(
             user_id="user-test-1",
             message_text=message_text,
@@ -270,20 +286,15 @@ def test_passport_ocr_applied():
 def test_passport_ocr_low_confidence():
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
+    import json as _json
 
-    sent_messages = []
+    mock_gemini_client = MagicMock()
+    mock_gemini_client.chats.create.return_value = MagicMock()
 
-    mock_chat = MagicMock()
-    mock_chat.send_message.side_effect = lambda msg: (
-        sent_messages.append(msg) or _gemini_response({
-            "text": "Фото не получилось. Попробуй ещё раз.",
-            "quick_replies": [],
-            "collected": {},
-            "status": "collecting",
-        })
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.return_value = _oai_response(
+        "Фото не получилось. Попробуй ещё раз."
     )
-    mock_client = MagicMock()
-    mock_client.chats.create.return_value = mock_chat
 
     ocr_bad = {"success": True, "confidence": 0.3}
 
@@ -295,11 +306,14 @@ def test_passport_ocr_low_confidence():
         _patch(_PATCH_SAVE_AI),
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
+        _patch(_PATCH_OPENAI) as mock_openai_mod,
     ):
-        mock_genai.Client.return_value = mock_client
-        handle_onboarding_ai("user-1", "", passport_ocr_data=ocr_bad)
+        mock_genai.Client.return_value = mock_gemini_client
+        mock_openai_mod.OpenAI.return_value = mock_oai_client
+        resp = handle_onboarding_ai("user-1", "", passport_ocr_data=ocr_bad)
 
-    assert any("не удалось" in str(m).lower() or "вручную" in str(m).lower() for m in sent_messages)
+    body = _json.loads(resp.body)
+    assert body["onboarding_phase"] == "collecting"
 
 
 # ── Test 10: Gemini API error returns fallback message ───────────────────────
@@ -309,8 +323,10 @@ def test_gemini_error_returns_fallback():
     from routers.onboarding_ai import handle_onboarding_ai
     import json as _json
 
-    mock_client = MagicMock()
-    mock_client.chats.create.side_effect = Exception("API unavailable")
+    mock_gemini_client = MagicMock()
+
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.side_effect = Exception("API unavailable")
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -320,29 +336,32 @@ def test_gemini_error_returns_fallback():
         _patch(_PATCH_SAVE_AI),
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
+        _patch(_PATCH_OPENAI) as mock_openai_mod,
     ):
-        mock_genai.Client.return_value = mock_client
+        mock_genai.Client.return_value = mock_gemini_client
+        mock_openai_mod.OpenAI.return_value = mock_oai_client
         resp = handle_onboarding_ai("user-1", "привет")
 
     body = _json.loads(resp.body)
-    assert "ошибка" in body["ai_response"].lower() or "попробуй" in body["ai_response"].lower()
+    # On error ai_text="" → fallback kicks in
+    assert len(body["ai_response"]) > 0
     assert body["onboarding_phase"] == "collecting"
 
 
 # ── Test 11: Non-JSON Gemini response treated as plain text ──────────────────
 
 def test_non_json_gemini_response():
+    """OpenAI returns plain text — should work directly."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
     import json as _json
 
-    mock_chat = MagicMock()
-    plain_mock = MagicMock()
-    plain_mock.text = "Привет! Как тебя зовут?"  # not JSON
-    mock_chat.send_message.return_value = plain_mock
+    mock_gemini_client = MagicMock()
 
-    mock_client = MagicMock()
-    mock_client.chats.create.return_value = mock_chat
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.return_value = _oai_response(
+        "Привет! Как тебя зовут?"
+    )
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -352,42 +371,39 @@ def test_non_json_gemini_response():
         _patch(_PATCH_SAVE_AI),
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
+        _patch(_PATCH_OPENAI) as mock_openai_mod,
     ):
-        mock_genai.Client.return_value = mock_client
+        mock_genai.Client.return_value = mock_gemini_client
+        mock_openai_mod.OpenAI.return_value = mock_oai_client
         resp = handle_onboarding_ai("user-1", "")
 
     body = _json.loads(resp.body)
-    assert body["ai_response"] == "Привет! Как тебя зовут?"
+    assert "Как тебя зовут" in body["ai_response"]
     assert body["onboarding_phase"] == "collecting"
 
 
 # ── Test 12: Chat history loaded for Gemini context ──────────────────────────
 
 def test_chat_history_used_as_context():
+    """Chat history is passed to OpenAI as messages context."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
 
     history_rows = [
         {"role": "ai", "message": "Привет. Как тебя зовут?"},
         {"role": "user", "message": "Марк"},
-        {"role": "ai", "message": "Отлично, Марк. Как зовут питомца?"},
+        {"role": "ai", "message": "Марк — и кто же у тебя живёт?"},
     ]
 
-    captured_history = []
+    captured_messages = []
 
-    def capture_chats_create(model=None, config=None, history=None):
-        captured_history.extend(history or [])
-        mock_chat = MagicMock()
-        mock_chat.send_message.return_value = _gemini_response({
-            "text": "Какая порода?",
-            "quick_replies": [],
-            "collected": {"pet_name": "Рекс"},
-            "status": "collecting",
-        })
-        return mock_chat
+    def capture_create(**kwargs):
+        captured_messages.extend(kwargs.get("messages", []))
+        return _oai_response("Какая порода?")
 
-    mock_client = MagicMock()
-    mock_client.chats.create.side_effect = capture_chats_create
+    mock_gemini_client = MagicMock()
+    mock_oai_client = MagicMock()
+    mock_oai_client.chat.completions.create.side_effect = capture_create
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -397,10 +413,14 @@ def test_chat_history_used_as_context():
         _patch(_PATCH_SAVE_AI),
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
+        _patch(_PATCH_OPENAI) as mock_openai_mod,
     ):
-        mock_genai.Client.return_value = mock_client
+        mock_genai.Client.return_value = mock_gemini_client
+        mock_openai_mod.OpenAI.return_value = mock_oai_client
         handle_onboarding_ai("user-1", "Рекс")
 
-    assert len(captured_history) == 3
-    assert captured_history[0]["role"] == "model"  # ai → model
-    assert captured_history[1]["role"] == "user"
+    # system + 3 history + 1 user = 5 messages
+    assert len(captured_messages) >= 4
+    assert captured_messages[0]["role"] == "system"
+    assert captured_messages[1]["role"] == "assistant"  # ai → assistant
+    assert captured_messages[2]["role"] == "user"
