@@ -1806,6 +1806,13 @@ def handle_onboarding_ai(
                 oai_messages.append({"role": role, "content": content})
         oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
 
+        logger.warning("[ONB] === AI CALL === step=%s instruction_start='%s' buttons=%s msg='%s' history_len=%d",
+                       current_step,
+                       step_instruction[:80],
+                       [q["label"] for q in quick_replies][:4] if quick_replies else [],
+                       actual_message[:50] if actual_message else "EMPTY",
+                       len(oai_messages))
+
         response = oai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=oai_messages,
@@ -1814,6 +1821,7 @@ def handle_onboarding_ai(
         )
         ai_text = (response.choices[0].message.content or "").strip()
         ai_text = _remove_stop_phrases(ai_text)
+        logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
     except Exception as e:
         logger.error("[oai_call] %s", e)
         ai_text = ""
