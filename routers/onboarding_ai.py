@@ -980,6 +980,17 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
             return updates
 
+        # Если больше 2 слов — фраза, не имя. AI извлечёт.
+        if len(raw.strip().split()) > 2:
+            ai_result = _validate_input_with_ai(raw, "owner_name", collected)
+            if ai_result.get("valid") and ai_result.get("value"):
+                updates["owner_name"] = ai_result["value"]
+            else:
+                hint = ai_result.get("hint", "")
+                if hint:
+                    updates["_input_hint"] = hint
+            return updates
+
         # 1-2 слова из букв → попробовать как имя
         result = _parse_name(raw, "owner_name")
         if result.get("is_valid") and result.get("name"):
@@ -1024,6 +1035,17 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         _pet_stop_phrases = ["не решил", "подскажи имя", "какие бывают", "не придумал", "посоветуй"]
         if any(p in low for p in _pet_stop_phrases):
             updates["_input_hint"] = "Как зовут питомца? Просто кличка."
+            return updates
+
+        # Если больше 2 слов — это фраза, не кличка. Сразу AI.
+        if len(raw.strip().split()) > 2:
+            ai_result = _validate_input_with_ai(raw, "pet_name", collected)
+            if ai_result.get("valid") and ai_result.get("value"):
+                updates["pet_name"] = ai_result["value"]
+            else:
+                hint = ai_result.get("hint", "")
+                if hint:
+                    updates["_input_hint"] = hint
             return updates
 
         result = _parse_name(raw, "pet_name")
@@ -1088,7 +1110,11 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 updates["goal"] = value
                 break
         if not updates.get("goal") and len(raw) > 2:
-            updates["goal"] = raw
+            # Фильтр: вид животного — это не goal
+            species_words = {"собака", "кошка", "кот", "пёс", "пес", "щенок", "котёнок", "котенок"}
+            if clean not in species_words:
+                updates["goal"] = raw
+            # Если вид — шаг повторится, AI переспросит
         if updates.get("goal") == "Есть тревога":
             updates["_concern_heard"] = True
 
@@ -1303,11 +1329,14 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         elif any(w in low for w in [
             "пропустить", "пропуск", "потом", "позже",
             "не сейчас", "скип", "нет", "не хочу",
+            "skip", "пропущу", "без фото", "не надо",
+            "не буду", "нет фото", "пас",
         ]):
             updates["_avatar_skipped"] = True
             logger.info("[ONB] avatar: SKIPPED via '%s'", raw)
         else:
-            logger.info("[ONB] avatar: UNRECOGNIZED input '%s'", raw)
+            logger.info("[ONB] avatar: UNRECOGNIZED '%s' — treating as skip", raw)
+            updates["_avatar_skipped"] = True
 
     return updates
 
@@ -1608,6 +1637,12 @@ def handle_onboarding_ai(
                 update_user_flags(user_id, user_flags)
                 _save_ai_message(user_id, ai_text, None, user_chat_id)
 
+                logger.warning("[ONB] === SENDING TO FRONT === qr_count=%d qr_labels=%s input_type=%s ai_text_len=%d phase=%s",
+                               len(breed_qr) if isinstance(breed_qr, list) else 0,
+                               [q["label"] for q in breed_qr][:5] if isinstance(breed_qr, list) else [],
+                               "text",
+                               len(ai_text) if ai_text else 0,
+                               "collecting")
                 return JSONResponse(content={
                     "ai_response": ai_text,
                     "quick_replies": breed_qr,
@@ -1719,6 +1754,8 @@ def handle_onboarding_ai(
             ai_text = _build_completion_text(collected)
             _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
 
+            logger.warning("[ONB] === SENDING TO FRONT === qr_count=0 qr_labels=[] input_type=text ai_text_len=%d phase=complete",
+                           len(ai_text) if ai_text else 0)
             return JSONResponse(content={
                 "ai_response": ai_text,
                 "quick_replies": [],
@@ -1734,6 +1771,7 @@ def handle_onboarding_ai(
         user_flags["onboarding_collected"] = collected
         update_user_flags(user_id, user_flags)
 
+        logger.warning("[ONB] === SENDING TO FRONT === qr_count=0 qr_labels=[] input_type=date_picker ai_text_len=0 phase=collecting")
         return JSONResponse(content={
             "ai_response": "",
             "quick_replies": [],
@@ -1797,6 +1835,12 @@ def handle_onboarding_ai(
     input_type = "date_picker" if (current_step == "birth_date" and collected.get("_wants_date_picker")) else "text"
     logger.info("[ONB] RESPONSE step=%s qr=%s input_type=%s ai_text='%s'", current_step, [q["label"] for q in quick_replies], input_type, ai_text[:80] if ai_text else "")
 
+    logger.warning("[ONB] === SENDING TO FRONT === qr_count=%d qr_labels=%s input_type=%s ai_text_len=%d phase=%s",
+                   len(quick_replies) if isinstance(quick_replies, list) else 0,
+                   [q["label"] for q in quick_replies][:5] if isinstance(quick_replies, list) else [],
+                   input_type,
+                   len(ai_text) if ai_text else 0,
+                   "complete" if current_step == "complete" else "collecting")
     return JSONResponse(content={
         "ai_response": ai_text,
         "quick_replies": quick_replies,
