@@ -351,25 +351,39 @@ def _validate_input_with_ai(text: str, field: str, collected: dict) -> dict:
             f'Пользователь проходит регистрацию. Его попросили назвать своё имя.\n'
             f'Он написал: "{text}"\n\n'
             f'ПРАВИЛА:\n'
-            f'1. Если это имя (Марк, Аня, Дмитрий, John) — верни JSON: {{"valid": true, "value": "Имя"}}\n'
-            f'2. Если это "ФИО" (Холкин Марк Викторович) — извлеки имя: {{"valid": true, "value": "Марк"}}\n'
-            f'3. Если это НЕ имя (приветствие, мат, вопрос, бред, ссылка, цифры) — '
-            f'верни JSON: {{"valid": false, "hint": "краткая подсказка что нужно имя"}}\n\n'
-            f'Примеры hint: "Напиши как тебя зовут — просто имя", '
-            f'"Мне нужно твоё имя — одно слово", "Как мне к тебе обращаться?"\n'
+            f'1. Если это имя — верни JSON: {{"valid": true, "value": "Имя"}}\n'
+            f'2. Извлекай имя из ЛЮБОЙ фразы:\n'
+            f'   "Марк" → Марк\n'
+            f'   "меня зовут Аня" → Аня\n'
+            f'   "Холкин Марк Викторович" → Марк\n'
+            f'   "привет я Дима" → Дима\n'
+            f'   "слушай, меня Саша зовут, у меня собака болеет" → Саша\n'
+            f'3. Если НЕ имя (приветствие без имени, мат, вопрос, бред, цифры, ссылка) — '
+            f'верни JSON: {{"valid": false, "hint": "подсказка"}}\n'
+            f'   "привет" → {{"valid": false, "hint": "Как мне к тебе обращаться?"}}\n'
+            f'   "блять" → {{"valid": false, "hint": "Напиши своё имя — просто одно слово"}}\n'
+            f'   "123" → {{"valid": false, "hint": "Как тебя зовут?"}}\n'
+            f'   "что это" → {{"valid": false, "hint": "Мне нужно твоё имя — как обращаться?"}}\n'
             f'ОТВЕТ — только JSON, ничего больше.'
         ),
         "pet_name": (
             f'Пользователь проходит регистрацию питомца. Его попросили назвать кличку.\n'
             f'Он написал: "{text}"\n\n'
             f'ПРАВИЛА:\n'
-            f'1. Если это кличка (Бобик, Рекс, Мурка, Батон, Цезарь, любая) — '
-            f'верни JSON: {{"valid": true, "value": "Кличка"}}\n'
-            f'2. ЛЮБАЯ необычная кличка допустима — не отклоняй\n'
-            f'3. Если это НЕ кличка (мат, вопрос, бред, "собака", "кошка") — '
-            f'верни JSON: {{"valid": false, "hint": "краткая подсказка"}}\n\n'
-            f'Примеры hint: "Как зовут питомца? Просто кличка", '
-            f'"Мне нужна кличка — одно слово"\n'
+            f'1. Если это кличка — верни JSON: {{"valid": true, "value": "Кличка"}}\n'
+            f'2. ЛЮБАЯ кличка допустима — и обычные (Рекс, Мурка) и человеческие (Борис, Маша, Степан, Филипп)\n'
+            f'3. Извлекай кличку из ЛЮБОЙ фразы:\n'
+            f'   "Бобик" → Бобик\n'
+            f'   "его зовут Борис" → Борис\n'
+            f'   "питомца зовут Доминик" → Доминик\n'
+            f'   "кличка Рекс" → Рекс\n'
+            f'   "ну собаку Шариком назвали" → Шарик\n'
+            f'   "Степан" → Степан\n'
+            f'4. Если НЕ кличка (мат, бред, вопрос, команда, "собака" без клички) — '
+            f'верни JSON: {{"valid": false, "hint": "подсказка"}}\n'
+            f'   "привет" → {{"valid": false, "hint": "Как зовут питомца?"}}\n'
+            f'   "собака" → {{"valid": false, "hint": "А как зовут? Кличка"}}\n'
+            f'   "не понимаю" → {{"valid": false, "hint": "Просто напиши кличку питомца"}}\n'
             f'ОТВЕТ — только JSON, ничего больше.'
         ),
     }
@@ -936,86 +950,29 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             updates["owner_name"] = "Друг"
             return updates
 
-        # Уровень 1 — быстрые проверки кодом
-        # Пустое, числа, спецсимволы, URL
-        if not raw or re.match(r"^[\d\W_]+$", raw) or "http" in low or "://" in low or "www." in low or ".ru" in low or ".com" in low or ".net" in low or ".me/" in low or ".org" in low or raw.startswith("/"):
+        # Пустое
+        if not raw or len(raw.strip()) == 0:
             return {}
 
-        # Стоп-слова которые _parse_name принимает как имена
-        _name_stopwords = {
-            "привет", "здравствуйте", "здравствуй", "хай", "хэй",
-            "hello", "hi", "hey", "ку", "йо", "здарова", "приветик",
-            "добрый", "доброе", "добрый день", "добрый вечер", "доброе утро",
-            "пока", "бай", "bye",
-            "да", "нет", "ок", "ok", "ладно", "ага", "угу", "неа", "не-а",
-            "что", "чё", "зачем", "почему", "как", "когда",
-            "тест", "test", "проверка", "начать", "старт", "start",
-            "помощь", "помоги", "help", "меню",
-            "хола", "салам", "алоха", "бонжур", "здарово", "здорово",
-            "чао", "шалом", "намасте", "хелло", "хэлло",
-        }
-        if clean in _name_stopwords or low in _name_stopwords:
-            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
-            return updates
+        # ЕДИНСТВЕННЫЙ путь — AI
+        try:
+            ai_result = _validate_input_with_ai(raw, "owner_name", collected)
+            logger.info("[ONB] owner_name AI: input='%s' result=%s", raw[:50], ai_result)
+        except Exception as e:
+            logger.error("[ONB] owner_name AI error: %s", e)
+            ai_result = {"valid": False, "hint": "Как мне к тебе обращаться?"}
 
-        # Мультисловные стоп-фразы
-        _name_stop_phrases = [
-            "добрый день", "добрый вечер", "доброе утро", "как дела",
-            "до свидания", "пока-пока", "до встречи",
-            "ну да", "ну нет", "не знаю", "без понятия",
-            "что это", "это что", "кто ты", "ты кто", "что делать",
-            "как это", "зачем это", "что за", "а что", "а зачем",
-            "не хочу", "не буду", "не надо", "отстань",
-            "иди на", "пошёл", "пошел", "отвали",
-            "что ты", "что можешь", "что умеешь", "ты бот",
-        ]
-        if any(p in low for p in _name_stop_phrases):
-            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
-            return updates
-
-        # Мат — не имя
-        _profanity_stems = ["бля", "хуй", "хуя", "хуе", "пизд", "ебан", "ёбан",
-                            "сука", "мудак", "мудил", "дерьм", "гавн", "жоп"]
-        if any(s in low for s in _profanity_stems):
-            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
-            return updates
-
-        # Если больше 2 слов — фраза, не имя. AI извлечёт.
-        if len(raw.strip().split()) > 2:
-            logger.warning("[ONB] owner_name phrase: '%s' — calling AI validation", raw)
-            try:
-                ai_result = _validate_input_with_ai(raw, "owner_name", collected)
-                logger.warning("[ONB] owner_name AI result: %s", ai_result)
-            except Exception as e:
-                logger.error("[ONB] owner_name AI EXCEPTION: %s", e)
-                ai_result = {"valid": False, "hint": ""}
-            if ai_result.get("valid") and ai_result.get("value"):
-                updates["owner_name"] = ai_result["value"]
-                logger.warning("[ONB] owner_name SET to '%s'", ai_result["value"])
-            else:
-                hint = ai_result.get("hint", "")
-                if hint:
-                    updates["_input_hint"] = hint
-                logger.warning("[ONB] owner_name REJECTED, hint='%s'", hint)
-            return updates
-
-        # 1-2 слова из букв → попробовать как имя
-        result = _parse_name(raw, "owner_name")
-        if result.get("is_valid") and result.get("name"):
-            updates["owner_name"] = result["name"]
-            return updates
-
-        # Уровень 2 — AI валидация с направлением
-        ai_result = _validate_input_with_ai(raw, "owner_name", collected)
         if ai_result.get("valid") and ai_result.get("value"):
-            updates["owner_name"] = ai_result["value"]
-            return updates
+            name = ai_result["value"].strip()
+            # Проверка кодом: минимум 2 буквы, начинается с заглавной
+            if len(name) >= 2 and name[0].isupper():
+                updates["owner_name"] = name
+                return updates
 
-        # AI сказал невалидно — сохранить hint для промпта
-        hint = ai_result.get("hint", "")
-        if hint:
-            updates["_input_hint"] = hint
-        return updates  # Шаг повторится, AI использует hint
+        # AI сказал невалидно или ошибка — hint для переспроса
+        hint = ai_result.get("hint", "Как мне к тебе обращаться?")
+        updates["_input_hint"] = hint
+        return updates
 
     # ─── pet_name ───
     elif step == "pet_name":
@@ -1024,60 +981,27 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             updates["pet_name"] = "Питомец"
             return updates
 
-        # Уровень 1 — быстрые проверки
-        if not raw or re.match(r"^[\d\W_]+$", raw) or "http" in low or "://" in low or "www." in low or ".ru" in low or ".com" in low or ".net" in low or ".me/" in low or ".org" in low:
+        # Пустое
+        if not raw or len(raw.strip()) == 0:
             return {}
 
-        _pet_stopwords = {
-            "привет", "здравствуйте", "хай", "hello", "hi", "hey",
-            "да", "нет", "ок", "что", "зачем", "почему",
-            "тест", "test", "начать", "старт", "помощь",
-            "собака", "кошка", "пёс", "пес", "кот",
-            "не решил", "думаю", "подскажи", "какие бывают",
-        }
-        if clean in _pet_stopwords or low in _pet_stopwords:
-            updates["_input_hint"] = "Как зовут питомца? Просто кличка."
-            return updates
+        # ЕДИНСТВЕННЫЙ путь — AI
+        try:
+            ai_result = _validate_input_with_ai(raw, "pet_name", collected)
+            logger.info("[ONB] pet_name AI: input='%s' result=%s", raw[:50], ai_result)
+        except Exception as e:
+            logger.error("[ONB] pet_name AI error: %s", e)
+            ai_result = {"valid": False, "hint": "Как зовут питомца?"}
 
-        # Мультисловные стоп-фразы
-        _pet_stop_phrases = ["не решил", "подскажи имя", "какие бывают", "не придумал", "посоветуй"]
-        if any(p in low for p in _pet_stop_phrases):
-            updates["_input_hint"] = "Как зовут питомца? Просто кличка."
-            return updates
-
-        # Если больше 2 слов — это фраза, не кличка. Сразу AI.
-        if len(raw.strip().split()) > 2:
-            logger.warning("[ONB] pet_name phrase: '%s' — calling AI validation", raw)
-            try:
-                ai_result = _validate_input_with_ai(raw, "pet_name", collected)
-                logger.warning("[ONB] pet_name AI result: %s", ai_result)
-            except Exception as e:
-                logger.error("[ONB] pet_name AI EXCEPTION: %s", e)
-                ai_result = {"valid": False, "hint": ""}
-            if ai_result.get("valid") and ai_result.get("value"):
-                updates["pet_name"] = ai_result["value"]
-                logger.warning("[ONB] pet_name SET to '%s'", ai_result["value"])
-            else:
-                hint = ai_result.get("hint", "")
-                if hint:
-                    updates["_input_hint"] = hint
-                logger.warning("[ONB] pet_name REJECTED, hint='%s'", hint)
-            return updates
-
-        result = _parse_name(raw, "pet_name")
-        if result.get("is_valid") and result.get("name"):
-            updates["pet_name"] = result["name"]
-            return updates
-
-        # Уровень 2 — AI с направлением
-        ai_result = _validate_input_with_ai(raw, "pet_name", collected)
         if ai_result.get("valid") and ai_result.get("value"):
-            updates["pet_name"] = ai_result["value"]
-            return updates
+            name = ai_result["value"].strip()
+            if len(name) >= 2 and name[0].isupper():
+                updates["pet_name"] = name
+                return updates
 
-        hint = ai_result.get("hint", "")
-        if hint:
-            updates["_input_hint"] = hint
+        # AI сказал невалидно — hint
+        hint = ai_result.get("hint", "Как зовут питомца?")
+        updates["_input_hint"] = hint
         return updates
 
     # ─── species_guess_dog ───

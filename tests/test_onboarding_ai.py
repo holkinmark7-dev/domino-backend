@@ -419,8 +419,15 @@ def test_chat_history_used_as_context():
         mock_openai_mod.OpenAI.return_value = mock_oai_client
         handle_onboarding_ai("user-1", "Рекс")
 
-    # system + 3 history + 1 user = 5 messages
-    assert len(captured_messages) >= 4
-    assert captured_messages[0]["role"] == "system"
-    assert captured_messages[1]["role"] == "assistant"  # ai → assistant
-    assert captured_messages[2]["role"] == "user"
+    # AI-only parsing may call OpenAI for validation first,
+    # then the main chat call adds system + history + user.
+    # Find the system message (start of main chat call).
+    system_idx = None
+    for i, m in enumerate(captured_messages):
+        if m["role"] == "system":
+            system_idx = i
+            break
+    assert system_idx is not None, f"No system message found in {[m['role'] for m in captured_messages]}"
+    assert captured_messages[system_idx]["role"] == "system"
+    assert captured_messages[system_idx + 1]["role"] == "assistant"  # ai → assistant
+    assert captured_messages[system_idx + 2]["role"] == "user"
