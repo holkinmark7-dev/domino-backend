@@ -133,6 +133,12 @@ _BREED_SHORTCUTS = {
     "перс": "Персидская классическая",
     "мейнкун": "Мейн-кун",
     "мейн кун": "Мейн-кун",
+    # Частые опечатки
+    "лобрадор": "Лабрадор",
+    "лабродор": "Лабрадор",
+    "лабрадр": "Лабрадор",
+    "хасски": "Хаски",
+    "хаски": "Хаски",
 }
 
 
@@ -932,8 +938,47 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
         # Уровень 1 — быстрые проверки кодом
         # Пустое, числа, спецсимволы, URL
-        if not raw or re.match(r"^[\d\W]+$", raw) or "http" in low or "://" in low:
+        if not raw or re.match(r"^[\d\W_]+$", raw) or "http" in low or "://" in low or "www." in low or ".ru" in low or ".com" in low or ".net" in low or ".me/" in low or ".org" in low or raw.startswith("/"):
             return {}
+
+        # Стоп-слова которые _parse_name принимает как имена
+        _name_stopwords = {
+            "привет", "здравствуйте", "здравствуй", "хай", "хэй",
+            "hello", "hi", "hey", "ку", "йо", "здарова", "приветик",
+            "добрый", "доброе", "добрый день", "добрый вечер", "доброе утро",
+            "пока", "бай", "bye",
+            "да", "нет", "ок", "ok", "ладно", "ага", "угу", "неа", "не-а",
+            "что", "чё", "зачем", "почему", "как", "когда",
+            "тест", "test", "проверка", "начать", "старт", "start",
+            "помощь", "помоги", "help", "меню",
+            "хола", "салам", "алоха", "бонжур", "здарово", "здорово",
+            "чао", "шалом", "намасте", "хелло", "хэлло",
+        }
+        if clean in _name_stopwords or low in _name_stopwords:
+            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
+            return updates
+
+        # Мультисловные стоп-фразы
+        _name_stop_phrases = [
+            "добрый день", "добрый вечер", "доброе утро", "как дела",
+            "до свидания", "пока-пока", "до встречи",
+            "ну да", "ну нет", "не знаю", "без понятия",
+            "что это", "это что", "кто ты", "ты кто", "что делать",
+            "как это", "зачем это", "что за", "а что", "а зачем",
+            "не хочу", "не буду", "не надо", "отстань",
+            "иди на", "пошёл", "пошел", "отвали",
+            "что ты", "что можешь", "что умеешь", "ты бот",
+        ]
+        if any(p in low for p in _name_stop_phrases):
+            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
+            return updates
+
+        # Мат — не имя
+        _profanity_stems = ["бля", "хуй", "хуя", "хуе", "пизд", "ебан", "ёбан",
+                            "сука", "мудак", "мудил", "дерьм", "гавн", "жоп"]
+        if any(s in low for s in _profanity_stems):
+            updates["_input_hint"] = "Как мне к тебе обращаться? Просто имя."
+            return updates
 
         # 1-2 слова из букв → попробовать как имя
         result = _parse_name(raw, "owner_name")
@@ -961,8 +1006,25 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             return updates
 
         # Уровень 1 — быстрые проверки
-        if not raw or re.match(r"^[\d\W]+$", raw) or "http" in low or "://" in low:
+        if not raw or re.match(r"^[\d\W_]+$", raw) or "http" in low or "://" in low or "www." in low or ".ru" in low or ".com" in low or ".net" in low or ".me/" in low or ".org" in low:
             return {}
+
+        _pet_stopwords = {
+            "привет", "здравствуйте", "хай", "hello", "hi", "hey",
+            "да", "нет", "ок", "что", "зачем", "почему",
+            "тест", "test", "начать", "старт", "помощь",
+            "собака", "кошка", "пёс", "пес", "кот",
+            "не решил", "думаю", "подскажи", "какие бывают",
+        }
+        if clean in _pet_stopwords or low in _pet_stopwords:
+            updates["_input_hint"] = "Как зовут питомца? Просто кличка."
+            return updates
+
+        # Мультисловные стоп-фразы
+        _pet_stop_phrases = ["не решил", "подскажи имя", "какие бывают", "не придумал", "посоветуй"]
+        if any(p in low for p in _pet_stop_phrases):
+            updates["_input_hint"] = "Как зовут питомца? Просто кличка."
+            return updates
 
         result = _parse_name(raw, "pet_name")
         if result.get("is_valid") and result.get("name"):
@@ -1129,7 +1191,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 best_score = score
                 best_match = breed_name
 
-        if best_score >= 75 and best_match:
+        if best_score >= 70 and best_match:
             if low in _BREED_CLARIFICATIONS:
                 updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[low]
                 return updates
@@ -1150,7 +1212,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── birth_date ───
     elif step == "birth_date":
-        if clean in ("выбрать дату", "знаю дату рождения", "знаю дату"):
+        if clean in ("выбрать дату", "знаю дату рождения", "знаю дату", "введу дату"):
             updates["_wants_date_picker"] = True
             return updates
         if clean in ("примерный возраст", "примерно"):
@@ -1442,30 +1504,36 @@ def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -
 
 
 def _build_completion_text(collected: dict) -> str:
-    """Generate completion text based on goal. No Gemini needed."""
-    pet = collected.get("pet_name") or "питомца"
-    goal = collected.get("goal") or ""
+    """Финальный текст по goal. Вызывается только при complete."""
+    pet = collected.get("pet_name", "питомец")
+    pet_gen = _decline_pet_name(pet, "gen")
+    goal = collected.get("goal", "")
 
-    if "тревог" in goal.lower() or goal == "Есть тревога":
+    if goal == "Есть тревога":
         return (
-            f"Карточка готова. "
-            f"Теперь расскажи — что беспокоит {pet}?"
+            f"Профиль {pet_gen} готов — все данные записаны. "
+            f"Теперь расскажи что тебя беспокоит."
         )
-    elif "здоровь" in goal.lower():
+    if "здоровь" in goal.lower():
         return (
-            f"Всё на месте. "
-            f"Открой профиль {pet} — там уже всё что ты рассказал."
+            f"Профиль {pet_gen} готов. "
+            f"Все данные на месте — можешь редактировать в любое время. "
+            f"Пиши если что-то понадобится."
         )
-    elif "привив" in goal.lower():
+    if "привив" in goal.lower():
         return (
-            f"Готово. Профиль {pet} создан — загляни туда."
+            f"Профиль {pet_gen} создан. "
+            f"Загляни в профиль — начнём с прививок."
         )
-    elif "дневник" in goal.lower():
+    if "дневник" in goal.lower():
         return (
-            f"Карточка {pet} готова. Пиши мне когда нужно."
+            f"Профиль {pet_gen} готов. "
+            f"Пиши мне когда нужно — всё запишу."
         )
-    else:
-        return f"Карточка {pet} готова. Открой профиль — там уже всё основное."
+    return (
+        f"Профиль {pet_gen} готов. "
+        f"Все данные записаны — можешь редактировать в любое время."
+    )
 
 
 # ── Main handler ───────────────────────────────────────────────────────────────
@@ -1486,9 +1554,11 @@ def handle_onboarding_ai(
 
     # 2. Handle special inputs (OCR, breed detection, avatar)
     actual_message = message_text
-    logger.info("[ONB] === NEW REQUEST === msg='%s' passport=%s breed=%s",
+    logger.info("[ONB] === NEW REQUEST === msg='%s' len=%d passport=%s breed=%s step_before_parse=%s",
                 message_text[:80] if message_text else "EMPTY",
-                bool(passport_ocr_data), bool(breed_detection_data))
+                len(message_text) if message_text else 0,
+                bool(passport_ocr_data), bool(breed_detection_data),
+                _get_current_step(collected))
     api_key = os.environ.get("GEMINI_API_KEY", "")
     client = genai.Client(api_key=api_key)
 
