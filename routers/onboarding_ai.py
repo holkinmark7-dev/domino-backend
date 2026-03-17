@@ -118,6 +118,23 @@ _BREED_CLARIFICATIONS = {
     "персидская": ["Персидская классическая", "Экзотическая короткошёрстная"],
 }
 
+_BREED_SHORTCUTS = {
+    "чихуа": "Чихуахуа",
+    "чихуа-хуа": "Чихуахуа",
+    "алабай": "Среднеазиатская овчарка",
+    "стафф": "Стаффордширский терьер",
+    "джек рассел": "Джек-рассел-терьер",
+    "кавказец": "Кавказская овчарка",
+    "азиат": "Среднеазиатская овчарка",
+    "немец": "Немецкая овчарка",
+    "француз": "Французский бульдог",
+    "англичанин": "Английский бульдог",
+    "британец": "Британская короткошёрстная",
+    "перс": "Персидская классическая",
+    "мейнкун": "Мейн-кун",
+    "мейн кун": "Мейн-кун",
+}
+
 
 # ── Declension helper ─────────────────────────────────────────────────────────
 
@@ -192,19 +209,36 @@ def _decline_pet_name(name: str, case: str) -> str:
 # ── Parsing helpers ────────────────────────────────────────────────────────────
 
 def _parse_age(msg: str) -> dict:
-    """Уровень 1 — regex. Возвращает {"age_years": число, "birth_date": str, "parsed": bool}"""
+    """Parse age from text. Returns age_years as float (1.5 = полтора года)."""
     text = msg.lower().strip()
+
+    # Специальные случаи
+    if "полтора" in text:
+        if "месяц" in text:
+            return {"age_years": 0.125, "birth_date": None, "parsed": True}  # 1.5 мес
+        return {"age_years": 1.5, "birth_date": None, "parsed": True}  # 1.5 года
+    if "полгода" in text or "пол года" in text:
+        return {"age_years": 0.5, "birth_date": None, "parsed": True}
+
     year_match = re.search(r'(\d+)\s*(лет|год|года)', text)
     month_match = re.search(r'(\d+)\s*(месяц|месяца|месяцев)', text)
-    half_year = "полгода" in text or "пол года" in text
+
+    years = 0
+    months = 0
+    has_data = False
 
     if year_match:
-        return {"age_years": int(year_match.group(1)), "birth_date": None, "parsed": True}
+        years = int(year_match.group(1))
+        has_data = True
     if month_match:
         months = int(month_match.group(1))
-        return {"age_years": round(months / 12, 2), "birth_date": None, "parsed": True}
-    if half_year:
-        return {"age_years": 0.5, "birth_date": None, "parsed": True}
+        has_data = True
+
+    if has_data:
+        # Комбинированный: "2 года 3 месяца" → 2.25
+        total = years + round(months / 12, 2)
+        return {"age_years": total, "birth_date": None, "parsed": True}
+
     return {"age_years": None, "birth_date": None, "parsed": False}
 
 
@@ -295,6 +329,65 @@ def _detect_name_gender(pet_name: str, client) -> str:
         return result if result in ("male", "female", "neutral") else "neutral"
     except Exception:
         return "neutral"
+
+
+def _validate_input_with_ai(text: str, field: str, collected: dict) -> dict:
+    """
+    AI проверяет ввод пользователя. Возвращает:
+    {"valid": True, "value": "Марк"} — если это валидное значение
+    {"valid": False, "hint": "Напиши своё имя — одно слово"} — если мусор
+    """
+    pet = collected.get("pet_name", "питомец")
+    owner = collected.get("owner_name", "")
+
+    prompts = {
+        "owner_name": (
+            f'Пользователь проходит регистрацию. Его попросили назвать своё имя.\n'
+            f'Он написал: "{text}"\n\n'
+            f'ПРАВИЛА:\n'
+            f'1. Если это имя (Марк, Аня, Дмитрий, John) — верни JSON: {{"valid": true, "value": "Имя"}}\n'
+            f'2. Если это "ФИО" (Холкин Марк Викторович) — извлеки имя: {{"valid": true, "value": "Марк"}}\n'
+            f'3. Если это НЕ имя (приветствие, мат, вопрос, бред, ссылка, цифры) — '
+            f'верни JSON: {{"valid": false, "hint": "краткая подсказка что нужно имя"}}\n\n'
+            f'Примеры hint: "Напиши как тебя зовут — просто имя", '
+            f'"Мне нужно твоё имя — одно слово", "Как мне к тебе обращаться?"\n'
+            f'ОТВЕТ — только JSON, ничего больше.'
+        ),
+        "pet_name": (
+            f'Пользователь проходит регистрацию питомца. Его попросили назвать кличку.\n'
+            f'Он написал: "{text}"\n\n'
+            f'ПРАВИЛА:\n'
+            f'1. Если это кличка (Бобик, Рекс, Мурка, Батон, Цезарь, любая) — '
+            f'верни JSON: {{"valid": true, "value": "Кличка"}}\n'
+            f'2. ЛЮБАЯ необычная кличка допустима — не отклоняй\n'
+            f'3. Если это НЕ кличка (мат, вопрос, бред, "собака", "кошка") — '
+            f'верни JSON: {{"valid": false, "hint": "краткая подсказка"}}\n\n'
+            f'Примеры hint: "Как зовут питомца? Просто кличка", '
+            f'"Мне нужна кличка — одно слово"\n'
+            f'ОТВЕТ — только JSON, ничего больше.'
+        ),
+    }
+
+    prompt = prompts.get(field)
+    if not prompt:
+        return {"valid": False, "hint": ""}
+
+    try:
+        oai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = oai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=80,
+            temperature=0.0,
+        )
+        raw_response = (response.choices[0].message.content or "").strip()
+        # Убрать markdown обёртку если есть
+        raw_response = raw_response.replace("```json", "").replace("```", "").strip()
+        result = json.loads(raw_response)
+        return result
+    except Exception as e:
+        logger.error("[validate_ai] %s", e)
+        return {"valid": False, "hint": ""}
 
 
 def _parse_breed_with_gemini(msg: str, species: str, client) -> dict:
@@ -743,6 +836,10 @@ def _build_system_prompt(
     else:
         decl = ""
 
+    # --- Hint если пользователь ввёл мусор ---
+    hint = collected.get("_input_hint", "")
+    hint_block = f"\nПОЛЬЗОВАТЕЛЬ НАПИСАЛ НЕ ТО. Мягко направь: {hint}\n" if hint else ""
+
     # --- Сборка ---
     return (
         f"{_CHARACTER_TEXT.strip()}\n"
@@ -750,6 +847,7 @@ def _build_system_prompt(
         f"\nУЖЕ ИЗВЕСТНО:\n{known_block}\n"
         f"{ctx_block}"
         f"{decl}"
+        f"{hint_block}"
         f"\n=== ЖЕЛЕЗНЫЕ ПРАВИЛА ===\n"
         f"1. Скажи РОВНО тот текст который указан в задаче — не добавляй слова\n"
         f"2. ОДИН вопрос, ОДНО-ДВА предложения максимум\n"
@@ -758,8 +856,12 @@ def _build_system_prompt(
         f"Зафиксировал, Конечно, Разумеется, Рад помочь, С чего начнём, "
         f"Хорошо, Приятно познакомиться, Давай начнём\n"
         f"5. НЕ используй имя Dominik вместо клички питомца\n"
-        f"6. Если пользователь написал что-то НЕ по теме (приветствие, вопрос, мусор, ерунда) — "
-        f"мягко верни к текущему вопросу. Не ругай, не объясняй. Просто переспроси.\n"
+        f"6. Если пользователь написал не по теме — мягко переспроси. "
+        f"Не ругай, не объясняй что это онбординг. Примеры переспроса:\n"
+        f'   - для имени: "Как мне к тебе обращаться?"\n'
+        f'   - для клички: "Как зовут питомца?"\n'
+        f'   - для вида: "Кошка или собака?"\n'
+        f'   - для остального: просто повтори текущий вопрос другими словами\n'
         f"=========================\n"
         f"\nТВОЯ ЗАДАЧА:\n{step_instruction}"
         f"{btn}\n"
@@ -823,48 +925,60 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── owner_name ───
     if step == "owner_name":
-        # Стоп-слова — это не имя, шаг повторится
-        not_a_name = {
-            "привет", "здравствуйте", "здравствуй", "хай", "хэй", "hey",
-            "hi", "hello", "добрый", "доброе", "добрый день", "добрый вечер",
-            "доброе утро", "ку", "йо", "здарова", "приветик", "хола", "салам",
-            "что", "чё", "че", "а", "ну", "ок", "да", "нет", "алло",
-            "помощь", "помоги", "начать", "старт", "start", "test",
-            "привет!", "хай!", "ку!", ".", "?", "!", "...",
-        }
-        if clean in not_a_name or low in not_a_name:
-            return {}
+        # Отказ назвать имя — принять
         if any(w in low for w in ["не скажу", "аноним", "не хочу", "не твоё дело", "не твое дело"]):
             updates["owner_name"] = "Друг"
             return updates
-        if re.match(r"^[\d\W]+$", raw):
+
+        # Уровень 1 — быстрые проверки кодом
+        # Пустое, числа, спецсимволы, URL
+        if not raw or re.match(r"^[\d\W]+$", raw) or "http" in low or "://" in low:
             return {}
-        parsed = _parse_name(raw, "owner_name")
-        if parsed.get("is_valid") and parsed.get("name"):
-            updates["owner_name"] = parsed["name"]
-        elif parsed.get("needs_ai") and client:
-            ai = _parse_name_with_gemini(raw, "owner_name", client)
-            if ai.get("is_valid") and ai.get("name"):
-                updates["owner_name"] = ai["name"]
-        # Нет fallback — если не распарсилось, шаг повторится
-        # AI переспросит мягко
+
+        # 1-2 слова из букв → попробовать как имя
+        result = _parse_name(raw, "owner_name")
+        if result.get("is_valid") and result.get("name"):
+            updates["owner_name"] = result["name"]
+            return updates
+
+        # Уровень 2 — AI валидация с направлением
+        ai_result = _validate_input_with_ai(raw, "owner_name", collected)
+        if ai_result.get("valid") and ai_result.get("value"):
+            updates["owner_name"] = ai_result["value"]
+            return updates
+
+        # AI сказал невалидно — сохранить hint для промпта
+        hint = ai_result.get("hint", "")
+        if hint:
+            updates["_input_hint"] = hint
+        return updates  # Шаг повторится, AI использует hint
 
     # ─── pet_name ───
     elif step == "pet_name":
+        # "Не знаю"
         if any(w in low for w in ["не знаю", "нет имени", "без имени", "пока нет"]):
             updates["pet_name"] = "Питомец"
             return updates
-        if re.match(r"^[\d\W]+$", raw):
+
+        # Уровень 1 — быстрые проверки
+        if not raw or re.match(r"^[\d\W]+$", raw) or "http" in low or "://" in low:
             return {}
-        parsed = _parse_name(raw, "pet_name")
-        if parsed.get("is_valid") and parsed.get("name"):
-            updates["pet_name"] = parsed["name"]
-        elif parsed.get("needs_ai") and client:
-            ai = _parse_name_with_gemini(raw, "pet_name", client)
-            if ai.get("is_valid") and ai.get("name"):
-                updates["pet_name"] = ai["name"]
-        # Нет fallback — если не распарсилось, шаг повторится
-        # AI переспросит мягко
+
+        result = _parse_name(raw, "pet_name")
+        if result.get("is_valid") and result.get("name"):
+            updates["pet_name"] = result["name"]
+            return updates
+
+        # Уровень 2 — AI с направлением
+        ai_result = _validate_input_with_ai(raw, "pet_name", collected)
+        if ai_result.get("valid") and ai_result.get("value"):
+            updates["pet_name"] = ai_result["value"]
+            return updates
+
+        hint = ai_result.get("hint", "")
+        if hint:
+            updates["_input_hint"] = hint
+        return updates
 
     # ─── species_guess_dog ───
     elif step == "species_guess_dog":
@@ -950,6 +1064,29 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── breed ───
     elif step == "breed":
+        # === Выбор из предложенных подвидов — записать НАПРЯМУЮ ===
+        current_opts = collected.get("_breed_clarification_options")
+        if current_opts:
+            # Точное совпадение (кнопка нажата)
+            for o in current_opts:
+                if raw == o or low == o.lower():
+                    updates["breed"] = o
+                    updates["_breed_clarification_options"] = None
+                    return updates
+            # Нечёткое совпадение (текст похож на подвид)
+            for o in current_opts:
+                if fuzz.ratio(low, o.lower()) >= 75:
+                    updates["breed"] = o
+                    updates["_breed_clarification_options"] = None
+                    return updates
+            # "Другая порода" обработается ниже — НЕ return
+
+        # === Словарь сокращений ===
+        shortcut = _BREED_SHORTCUTS.get(low)
+        if shortcut:
+            updates["breed"] = shortcut
+            return updates
+
         if any(w in low for w in ["не знаю породу", "не знаю", "хз", "без понятия"]):
             updates["_breed_unknown"] = True
             return updates
@@ -992,7 +1129,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 best_score = score
                 best_match = breed_name
 
-        if best_score >= 85 and best_match:
+        if best_score >= 75 and best_match:
             if low in _BREED_CLARIFICATIONS:
                 updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[low]
                 return updates
@@ -1097,16 +1234,18 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── avatar ───
     elif step == "avatar":
-        logger.info("[ONB] avatar parse: raw='%s' low='%s' clean='%s' matches=%s",
-                     raw, low, clean,
-                     [w for w in ["пропустить", "пропуск", "потом", "позже", "не сейчас", "скип", "нет", "не хочу"] if w in low])
+        logger.info("[ONB] avatar: raw='%s' low='%s' clean='%s'", raw, low, clean)
         if raw == "AVATAR_PHOTO":
+            logger.info("[ONB] avatar: AVATAR_PHOTO received")
             pass
         elif any(w in low for w in [
             "пропустить", "пропуск", "потом", "позже",
             "не сейчас", "скип", "нет", "не хочу",
         ]):
             updates["_avatar_skipped"] = True
+            logger.info("[ONB] avatar: SKIPPED via '%s'", raw)
+        else:
+            logger.info("[ONB] avatar: UNRECOGNIZED input '%s'", raw)
 
     return updates
 
@@ -1434,10 +1573,16 @@ def handle_onboarding_ai(
             collected["_detected_gender_hint"] = _detect_name_gender(pet_name_val, client)
 
     # 5. Parse user input (text messages only, not special inputs)
+    old_step = current_step  # сохранить перед парсингом
     if actual_message and actual_message == message_text:
         updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
         logger.info("[ONB] PARSED updates=%s", updates)
+    else:
+        logger.info("[ONB] PARSE SKIPPED: actual='%s' original='%s' equal=%s",
+                     actual_message[:50] if actual_message else "NONE",
+                     message_text[:50] if message_text else "NONE",
+                     actual_message == message_text)
 
     # Сброс одноразовых флагов
     if collected.get("birth_date") or collected.get("age_years") or collected.get("_age_skipped"):
@@ -1447,6 +1592,10 @@ def handle_onboarding_ai(
     # 6. Second _get_current_step — after parsing
     current_step = _get_current_step(collected)
     logger.info("[ONB] AFTER step=%s flags=%s", current_step, {k: v for k, v in collected.items() if k.startswith("_")})
+
+    # Очистить hint если шаг изменился (успешный ввод)
+    if current_step != old_step:
+        collected.pop("_input_hint", None)
 
     # 7. If step changed to gender — compute hint for new step
     if current_step == "gender" and not collected.get("_detected_gender_hint"):
@@ -1479,11 +1628,13 @@ def handle_onboarding_ai(
         except Exception as e:
             logger.error("[ONB] owner_name save: %s", e)
 
-    logger.info("[ONB] === COMPLETE CHECK === step=%s avatar_url=%s avatar_skipped=%s all_fields=%s",
+    logger.info("[ONB] === COMPLETE CHECK === step=%s avatar_skipped=%s avatar_url=%s breed=%s gender=%s neutered=%s",
                 current_step,
-                collected.get("avatar_url"),
                 collected.get("_avatar_skipped"),
-                {k: (v if not k.startswith("_") else "...") for k, v in collected.items() if v is not None and v != ""})
+                collected.get("avatar_url"),
+                collected.get("breed"),
+                collected.get("gender"),
+                collected.get("is_neutered"))
 
     # 10. Check completion — early return without Gemini
     if current_step == "complete":
