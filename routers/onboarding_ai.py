@@ -982,13 +982,21 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
         # Если больше 2 слов — фраза, не имя. AI извлечёт.
         if len(raw.strip().split()) > 2:
-            ai_result = _validate_input_with_ai(raw, "owner_name", collected)
+            logger.warning("[ONB] owner_name phrase: '%s' — calling AI validation", raw)
+            try:
+                ai_result = _validate_input_with_ai(raw, "owner_name", collected)
+                logger.warning("[ONB] owner_name AI result: %s", ai_result)
+            except Exception as e:
+                logger.error("[ONB] owner_name AI EXCEPTION: %s", e)
+                ai_result = {"valid": False, "hint": ""}
             if ai_result.get("valid") and ai_result.get("value"):
                 updates["owner_name"] = ai_result["value"]
+                logger.warning("[ONB] owner_name SET to '%s'", ai_result["value"])
             else:
                 hint = ai_result.get("hint", "")
                 if hint:
                     updates["_input_hint"] = hint
+                logger.warning("[ONB] owner_name REJECTED, hint='%s'", hint)
             return updates
 
         # 1-2 слова из букв → попробовать как имя
@@ -1039,13 +1047,21 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
         # Если больше 2 слов — это фраза, не кличка. Сразу AI.
         if len(raw.strip().split()) > 2:
-            ai_result = _validate_input_with_ai(raw, "pet_name", collected)
+            logger.warning("[ONB] pet_name phrase: '%s' — calling AI validation", raw)
+            try:
+                ai_result = _validate_input_with_ai(raw, "pet_name", collected)
+                logger.warning("[ONB] pet_name AI result: %s", ai_result)
+            except Exception as e:
+                logger.error("[ONB] pet_name AI EXCEPTION: %s", e)
+                ai_result = {"valid": False, "hint": ""}
             if ai_result.get("valid") and ai_result.get("value"):
                 updates["pet_name"] = ai_result["value"]
+                logger.warning("[ONB] pet_name SET to '%s'", ai_result["value"])
             else:
                 hint = ai_result.get("hint", "")
                 if hint:
                     updates["_input_hint"] = hint
+                logger.warning("[ONB] pet_name REJECTED, hint='%s'", hint)
             return updates
 
         result = _parse_name(raw, "pet_name")
