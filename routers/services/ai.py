@@ -1,11 +1,12 @@
 import os
+import json
 import anthropic
 from google import genai
 from google.genai import types as genai_types
 from routers.services.response_templates import select_template, get_phase_prefix
 from routers.services.model_router import get_model_for_response, get_model_for_extraction, ModelConfig
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Generator
 
 
 def _call_llm(config: ModelConfig, system_prompt: str, user_prompt: str, max_tokens: int = 600) -> str:
@@ -47,6 +48,63 @@ def _call_llm(config: ModelConfig, system_prompt: str, user_prompt: str, max_tok
             ),
         )
         return response.text or ""
+
+    else:
+        raise ValueError(f"Unknown provider: {config.provider}")
+
+
+def _call_llm_stream(
+    config: ModelConfig,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int = 2048,
+) -> Generator[str, None, None]:
+    """
+    Streaming LLM call. Yields text chunks.
+    Only Gemini supports true streaming; others fall back to single chunk.
+    """
+    if config.provider == "google":
+        client = genai.Client(api_key=os.getenv(config.api_key_env))
+        response = client.models.generate_content_stream(
+            model=config.model,
+            contents=user_prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
+        for chunk in response:
+            text = chunk.text
+            if text:
+                yield text
+
+    elif config.provider == "anthropic":
+        client = anthropic.Anthropic(api_key=os.getenv(config.api_key_env))
+        with client.messages.stream(
+            model=config.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+    elif config.provider == "openai":
+        from openai import OpenAI
+        client = OpenAI(api_key=os.getenv(config.api_key_env))
+        response = client.chat.completions.create(
+            model=config.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.4,
+            stream=True,
+        )
+        for chunk in response:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
 
     else:
         raise ValueError(f"Unknown provider: {config.provider}")
@@ -765,6 +823,54 @@ User message:
         system_prompt=system_block,
         user_prompt=user_prompt,
         max_tokens=2048,
+    )
+
+
+def generate_ai_response_stream(req: AIResponseRequest) -> Generator[str, None, None]:
+    """
+    Same as generate_ai_response but yields SSE chunks via _call_llm_stream.
+    Reuses identical prompt construction by calling generate_ai_response's
+    prompt-building logic, then switches to streaming call.
+    """
+    # Build prompts by leveraging the same logic — we need system_block and user_prompt.
+    # To avoid duplicating 600 lines of prompt construction, we extract them
+    # by temporarily patching the final call. Instead, we replicate just
+    # the model selection + call portion.
+    #
+    # The cleanest approach: generate_ai_response builds system_block/user_prompt
+    # then calls _call_llm. We add a flag to return those instead.
+    # But for minimal change, we just inline the model selection here.
+
+    # Re-run the full prompt construction by calling the internal builder
+    # This is a controlled wrapper: build prompts same way, stream the call
+    import types as _types
+
+    # Capture the prompts by monkey-patching _call_llm temporarily
+    _captured = {}
+
+    original_call = _call_llm
+
+    def _intercept(config, system_prompt, user_prompt, max_tokens=2048):
+        _captured["config"] = config
+        _captured["system_prompt"] = system_prompt
+        _captured["user_prompt"] = user_prompt
+        _captured["max_tokens"] = max_tokens
+        return ""  # dummy return
+
+    # Patch, call, restore
+    import routers.services.ai as _self_module
+    _self_module._call_llm = _intercept
+    try:
+        generate_ai_response(req)
+    finally:
+        _self_module._call_llm = original_call
+
+    # Now stream using captured prompts
+    yield from _call_llm_stream(
+        config=_captured["config"],
+        system_prompt=_captured["system_prompt"],
+        user_prompt=_captured["user_prompt"],
+        max_tokens=_captured.get("max_tokens", 2048),
     )
 
 

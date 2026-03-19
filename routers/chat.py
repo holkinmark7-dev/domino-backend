@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from dependencies.auth import get_current_user
 from dependencies.limiter import limiter
 from schemas.chat import ChatMessage
@@ -13,7 +13,7 @@ from routers.services.memory import (
     get_user_flags,
     update_user_flags,
 )
-from routers.services.ai import generate_ai_response, extract_event_data, AIResponseRequest
+from routers.services.ai import generate_ai_response, generate_ai_response_stream, extract_event_data, AIResponseRequest
 from routers.services.symptom_registry import normalize_symptom
 from routers.services.symptom_class_registry import get_symptom_class
 from routers.services.episode_manager import process_event, update_episode_escalation
@@ -847,3 +847,329 @@ def create_chat_message(message: ChatMessage, request: Request = None, current_u
     )
 
     return response_payload
+
+
+# ── SSE Streaming endpoint ──────────────────────────────────────────────────
+
+@router.post("/chat/stream")
+@limiter.limit("10/minute")
+def create_chat_message_stream(message: ChatMessage, request: Request = None, current_user: dict = Depends(get_current_user)):
+    """
+    Streaming version of /chat. Same preprocessing, but AI response
+    is streamed via SSE (text/event-stream).
+    Onboarding deterministic steps fall back to regular JSON.
+    """
+    _t0 = time.perf_counter()
+
+    if isinstance(current_user, dict) and message.user_id != current_user["id"]:
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    if message.pet_id:
+        _ownership = (
+            supabase.table("pets")
+            .select("id")
+            .eq("id", message.pet_id)
+            .eq("user_id", message.user_id)
+            .limit(1)
+            .execute()
+        )
+        if not _ownership.data:
+            return JSONResponse(status_code=403, content={"error": "pet not found or access denied"})
+
+    ensure_user_exists(message.user_id)
+
+    # Onboarding → no streaming, delegate to existing handler
+    if not message.pet_id:
+        _update_last_seen(message.user_id)
+        return handle_onboarding_ai(
+            user_id=message.user_id,
+            message_text=message.message or "",
+            passport_ocr_data=message.passport_ocr_data,
+            breed_detection_data=message.breed_detection_data,
+        )
+
+    _update_last_seen(message.user_id)
+
+    # ── Preprocessing (same as /chat) ──
+    chat_data_list = []
+    if message.message and message.message.strip():
+        chat_data = supabase.table("chat").insert({
+            "user_id": message.user_id,
+            "pet_id": message.pet_id,
+            "message": message.message,
+            "role": "user",
+            "mode": "user",
+        }).execute()
+        chat_data_list = chat_data.data
+
+        save_event(
+            user_id=message.user_id,
+            pet_id=message.pet_id,
+            event_type="chat_message",
+            content=message.message,
+        )
+
+    structured_data = _extract_and_normalize(message.message)
+    _message_mode = _classify_message_mode(structured_data, message.message)
+    _vitals = _extract_vitals(structured_data)
+    _lethargy_level = _vitals["lethargy_level"]
+    _temperature_value = _vitals["temperature_value"]
+    _respiratory_rate = _vitals["respiratory_rate"]
+    _seizure_duration = _vitals["seizure_duration"]
+
+    pet_profile = get_pet_profile(pet_id=message.pet_id) or {}
+    _species = (pet_profile.get("species") or "").lower() if pet_profile else ""
+    _age_years = compute_age_years(pet_profile.get("birth_date") if pet_profile else None)
+
+    red_flag = _detect_red_flags(message.message)
+
+    try:
+        _ep_valid = isinstance(structured_data, dict) and "error" not in structured_data
+        _ep_symptom = structured_data.get("symptom") if _ep_valid else None
+        _ep_medication = structured_data.get("medication") if _ep_valid else None
+        episode_result = process_event(
+            pet_id=message.pet_id,
+            symptom=_ep_symptom,
+            medication=_ep_medication,
+            message_text=message.message,
+        )
+        if episode_result.get("episode_id") and _ep_valid:
+            structured_data["episode_id"] = episode_result["episode_id"]
+    except Exception as e:
+        logger.error("[episode tracking] %s", e)
+        episode_result = {"episode_id": None, "action": "standalone"}
+
+    _all_medical_events = get_medical_events(pet_id=message.pet_id, limit=20)
+
+    decision = build_full_clinical_decision(
+        message_text=message.message,
+        pet_id=message.pet_id,
+        structured_data=structured_data,
+        pet_profile=pet_profile,
+        episode_result=episode_result,
+        red_flag=red_flag,
+        lethargy_level=_lethargy_level,
+        temperature_value=_temperature_value,
+        respiratory_rate=_respiratory_rate,
+        seizure_duration=_seizure_duration,
+        species=_species,
+        age_years=_age_years,
+        prev_events=_all_medical_events,
+    )
+
+    if decision is not None:
+        _refusing_water = bool(structured_data.get("refusing_water", False)) if isinstance(structured_data, dict) and "error" not in structured_data else False
+    else:
+        _refusing_water = False
+
+    if isinstance(_temperature_value, float) and decision is None and _temperature_value >= 39.5:
+        decision = {
+            "escalation": "LOW",
+            "stats": {"today": 0, "last_hour": 0, "last_24h": 0},
+            "symptom": structured_data.get("symptom") if isinstance(structured_data, dict) else None,
+            "stop_questioning": True,
+            "override_urgency": True,
+        }
+
+    if _refusing_water and _lethargy_level != "none" and decision is None:
+        decision = {
+            "escalation": "LOW",
+            "stats": {"today": 0, "last_hour": 0, "last_24h": 0},
+            "symptom": structured_data.get("symptom") if isinstance(structured_data, dict) else None,
+            "stop_questioning": False,
+            "override_urgency": False,
+        }
+
+    recent_events = get_recent_events(pet_id=message.pet_id, limit=10)
+
+    previous_assistant_text = None
+    try:
+        _prev_ai = (
+            supabase.table("chat")
+            .select("message")
+            .eq("pet_id", message.pet_id)
+            .eq("role", "ai")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if _prev_ai.data:
+            previous_assistant_text = _prev_ai.data[0]["message"]
+    except Exception as _prev_err:
+        logger.error("[prev_assistant] %s", _prev_err)
+
+    _prev_summary = (previous_assistant_text or "")[:200] or None
+
+    if decision:
+        decision = postprocess_decision(
+            decision=decision,
+            structured_data=structured_data,
+            message_text=message.message,
+            pet_id=message.pet_id,
+            pet_profile=pet_profile,
+            episode_result=episode_result,
+            prev_events=_all_medical_events,
+            species=_species,
+            age_years=_age_years,
+            lethargy_level=_lethargy_level,
+            refusing_water=_refusing_water,
+            temperature_value=_temperature_value,
+            previous_assistant_text=_prev_summary,
+            recent_events=recent_events,
+            supabase_client=supabase,
+        )
+
+    dialogue_mode = decision.get("dialogue_mode", "normal") if decision else "normal"
+
+    if (
+        isinstance(structured_data, dict)
+        and "error" not in structured_data
+        and structured_data.get("symptom")
+    ):
+        save_medical_event(
+            user_id=message.user_id,
+            pet_id=message.pet_id,
+            structured_data=structured_data,
+            source_chat_id=chat_data_list[0]["id"] if chat_data_list else None,
+            episode_id=episode_result.get("episode_id"),
+            escalation_level=decision.get("escalation", "LOW") if decision else "LOW",
+        )
+
+    memory_context, temporal_flag = _build_memory_context(_all_medical_events)
+
+    _uf = get_user_flags(message.user_id)
+    _pending_q = _uf.get("pending_question")
+    if _pending_q:
+        memory_context = (memory_context or "") + (
+            f"\n\nПользователь ранее спрашивал во время онбординга: \"{_pending_q}\". "
+            "Ответь на этот вопрос первым делом, а потом продолжай."
+        )
+        _uf.pop("pending_question")
+        update_user_flags(message.user_id, _uf)
+
+    _urgency = _compute_urgency(structured_data, decision)
+    urgency_score = _urgency["urgency_score"]
+    risk_level = _urgency["risk_level"]
+    followup_instructions = _urgency["followup_instructions"]
+
+    _strict = (
+        "NO QUESTIONS. STEP-BY-STEP INSTRUCTIONS. CALM BUT DIRECT. RUSSIAN."
+        if decision and decision.get("response_type") == "ACTION"
+        else None
+    )
+
+    raw_known_facts = {
+        "symptom": structured_data.get("symptom"),
+        "blood": structured_data.get("blood"),
+        "lethargy_level": decision.get("lethargy_level") if decision else None,
+        "refusing_water": decision.get("refusing_water") if decision else None,
+        "temperature": decision.get("temperature_value") if decision else None,
+        "food": structured_data.get("food") if isinstance(structured_data, dict) else None,
+    }
+    known_facts = {k: v for k, v in raw_known_facts.items() if v is not None}
+    allowed_questions = build_missing_facts(structured_data)
+    llm_contract = {
+        "risk_level": decision.get("escalation") if decision else "LOW",
+        "response_type": decision.get("response_type") if decision else "ASSESS",
+        "episode_phase": decision.get("episode_phase") if decision else "initial",
+        "known_facts": known_facts,
+        "allowed_questions": allowed_questions,
+        "max_questions": (
+            2 if decision and decision.get("response_type") == "CLARIFY"
+            else 1 if decision and decision.get("response_type") == "ASSESS"
+            else 0
+        ),
+    }
+
+    _linked_date = str(date.today()) if decision and structured_data.get("symptom") else None
+    _user_chat_id = chat_data_list[0]["id"] if chat_data_list else None
+
+    # Build AIResponseRequest
+    ai_req = AIResponseRequest(
+        pet_profile=pet_profile,
+        recent_events=recent_events,
+        user_message=message.message,
+        urgency_score=urgency_score,
+        risk_level=risk_level,
+        memory_context=memory_context,
+        clinical_decision=decision,
+        dialogue_mode=dialogue_mode,
+        previous_assistant_text=_prev_summary,
+        strict_override=_strict,
+        llm_contract=llm_contract,
+        message_mode=_message_mode,
+        client_time=message.client_time,
+    )
+
+    # ── SSE Generator ──
+    def sse_generator():
+        full_response = []
+        try:
+            for chunk in generate_ai_response_stream(ai_req):
+                full_response.append(chunk)
+                yield f"data: {json.dumps({'t': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as _stream_err:
+            logger.error("[stream error] %s", _stream_err)
+            _err_text = "Извини, произошла ошибка. Попробуй ещё раз."
+            full_response.append(_err_text)
+            yield f"data: {json.dumps({'t': _err_text}, ensure_ascii=False)}\n\n"
+
+        ai_response = "".join(full_response)
+
+        # Persist AI response
+        try:
+            supabase.table("chat").insert({
+                "user_id": message.user_id,
+                "pet_id": message.pet_id,
+                "message": ai_response,
+                "role": "ai",
+                "linked_chat_id": _user_chat_id,
+                "urgency_score": urgency_score,
+                "risk_level": risk_level,
+                "mode": _message_mode,
+            }).execute()
+        except Exception as _save_err:
+            logger.error("[stream ai_persist] %s", _save_err)
+
+        # Episode escalation
+        if episode_result.get("episode_id") and decision:
+            _ep_esc = decision.get("escalation")
+            if _ep_esc:
+                try:
+                    update_episode_escalation(episode_result["episode_id"], _ep_esc)
+                except Exception:
+                    pass
+
+        # Timeline recalc
+        try:
+            from routers.timeline import recalculate_day
+            from datetime import date as _date_cls
+            recalculate_day(pet_id=str(message.pet_id), date_str=str(_date_cls.today()))
+        except Exception:
+            pass
+
+        # Final chunk with metadata
+        final_data = {
+            "t": "",
+            "done": True,
+            "chat_saved": chat_data_list,
+            "structured_data": structured_data,
+            "risk_level": risk_level,
+            "urgency_score": urgency_score,
+            "followup_instructions": followup_instructions,
+            "linked_date": _linked_date,
+            "response_type": _message_mode,
+            "quick_replies": [],
+            "input_type": "text",
+        }
+        yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
