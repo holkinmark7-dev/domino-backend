@@ -1798,3 +1798,191 @@ def handle_onboarding_ai(
         "input_type": input_type,
         "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
     })
+
+
+def prepare_onboarding_for_stream(
+    user_id: str,
+    message_text: str,
+    passport_ocr_data: dict | None = None,
+    breed_detection_data: dict | None = None,
+) -> dict:
+    """
+    Run all onboarding logic EXCEPT the LLM call.
+    Returns either:
+      {"type": "final", "response": {...}}  — deterministic, send as one chunk
+      {"type": "llm",   "oai_messages": [...], "metadata": {...}, "user_chat_id": ..., "collected": {...}}
+    """
+    # 1. Load state
+    user_flags = get_user_flags(user_id)
+    collected: dict = user_flags.get("onboarding_collected") or {}
+
+    actual_message = message_text
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    client = genai.Client(api_key=api_key)
+
+    # 2. Special inputs (OCR, breed, avatar) — same as handle_onboarding_ai
+    if passport_ocr_data and passport_ocr_data.get("success") and passport_ocr_data.get("confidence", 0) >= 0.6:
+        ocr_fields = {"pet_name", "breed", "birth_date", "gender", "is_neutered"}
+        ocr_updates = {f: passport_ocr_data[f] for f in ocr_fields if passport_ocr_data.get(f) and not collected.get(f)}
+        collected.update(ocr_updates)
+        collected["_passport_skipped"] = True
+        actual_message = "Паспорт отсканирован, данные заполнены автоматически."
+    elif passport_ocr_data:
+        collected["_passport_skipped"] = True
+        actual_message = "Не удалось прочитать паспорт. Заполним вручную."
+    elif breed_detection_data and breed_detection_data.get("success"):
+        breeds = breed_detection_data.get("breeds", [])
+        color = breed_detection_data.get("color")
+        if breeds:
+            top = breeds[0]
+            if top["probability"] > 0.7:
+                collected["breed"] = top["name_ru"]
+                if color:
+                    collected["color"] = color
+                actual_message = (
+                    f"По фото определил породу: {top['name_ru']} "
+                    f"({int(top['probability'] * 100)}% уверенность). "
+                    f"Окрас: {color or 'не определён'}."
+                )
+            else:
+                ai_text = "Вижу несколько вариантов по фото."
+                breed_qr = [
+                    {"label": f"{b['name_ru']} ({int(b['probability'] * 100)}%)", "value": b["name_ru"], "preferred": i == 0}
+                    for i, b in enumerate(breeds[:3])
+                ]
+                breed_qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
+                user_chat_id = _save_user_message(user_id, "Фото для определения породы")
+                user_flags["onboarding_collected"] = collected
+                update_user_flags(user_id, user_flags)
+                _save_ai_message(user_id, ai_text, None, user_chat_id)
+                return {"type": "final", "response": {
+                    "ai_response": ai_text, "quick_replies": breed_qr,
+                    "onboarding_phase": "collecting", "pet_id": None, "pet_card": None,
+                    "input_type": "text",
+                    "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+                }}
+        else:
+            actual_message = "Не удалось определить породу по фото."
+    elif message_text and message_text.startswith("avatar_url:"):
+        avatar_url = message_text[len("avatar_url:"):]
+        if avatar_url:
+            collected["avatar_url"] = avatar_url
+        actual_message = "Фото загружено."
+
+    # 3-7. Steps, parsing, gender hints — same as handle_onboarding_ai
+    current_step = _get_current_step(collected)
+
+    if current_step == "gender" and not collected.get("_detected_gender_hint"):
+        pet_name_val = collected.get("pet_name", "")
+        name_lower = pet_name_val.lower()
+        if name_lower in _MALE_NAMES or name_lower in _DOG_NAMES:
+            collected["_detected_gender_hint"] = "male"
+        elif name_lower in _FEMALE_NAMES or name_lower in _CAT_NAMES:
+            collected["_detected_gender_hint"] = "female"
+        else:
+            collected["_detected_gender_hint"] = _detect_name_gender(pet_name_val, client)
+
+    old_step = current_step
+    if actual_message and actual_message == message_text:
+        updates = _parse_user_input(actual_message, current_step, collected, client=client)
+        collected.update(updates)
+
+    if collected.get("birth_date") or collected.get("age_years") or collected.get("_age_skipped"):
+        collected["_wants_date_picker"] = False
+        collected["_age_approximate"] = False
+
+    current_step = _get_current_step(collected)
+
+    if current_step != old_step:
+        collected.pop("_input_hint", None)
+
+    if current_step == "gender" and not collected.get("_detected_gender_hint"):
+        pet_name_val = collected.get("pet_name", "")
+        name_lower = pet_name_val.lower()
+        if name_lower in _MALE_NAMES or name_lower in _DOG_NAMES:
+            collected["_detected_gender_hint"] = "male"
+        elif name_lower in _FEMALE_NAMES or name_lower in _CAT_NAMES:
+            collected["_detected_gender_hint"] = "female"
+        else:
+            collected["_detected_gender_hint"] = _detect_name_gender(pet_name_val, client)
+
+    # 8. Save user message
+    user_chat_id = None
+    if actual_message and actual_message.strip():
+        user_chat_id = _save_user_message(user_id, actual_message)
+
+    # 9. Save collected
+    user_flags["onboarding_collected"] = collected
+    update_user_flags(user_id, user_flags)
+
+    if collected.get("owner_name") and not user_flags.get("_owner_name_saved"):
+        try:
+            supabase.table("users").update(
+                {"owner_name": collected["owner_name"]}
+            ).eq("id", user_id).execute()
+            user_flags["_owner_name_saved"] = True
+            update_user_flags(user_id, user_flags)
+        except Exception as e:
+            logger.error("[ONB stream] owner_name save: %s", e)
+
+    # 10. Completion — deterministic
+    if current_step == "complete":
+        create_result = _create_pet(user_id, collected)
+        if create_result:
+            pet_id, short_id = create_result
+            user_flags["onboarding_collected"] = None
+            user_flags["onboarding_pet_id"] = pet_id
+            update_user_flags(user_id, user_flags)
+            pet_card = None
+            ai_text = _build_completion_text(collected)
+            _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
+            return {"type": "final", "response": {
+                "ai_response": ai_text, "quick_replies": [],
+                "onboarding_phase": "complete", "pet_id": pet_id,
+                "pet_card": pet_card, "input_type": "text",
+                "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+            }}
+
+    # DatePicker — deterministic
+    if current_step == "birth_date" and collected.get("_wants_date_picker"):
+        return {"type": "final", "response": {
+            "ai_response": "", "quick_replies": [],
+            "onboarding_phase": "collecting", "pet_id": None, "pet_card": None,
+            "input_type": "date_picker",
+            "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+        }}
+
+    # 11-13. Prepare prompt for LLM
+    quick_replies = _get_step_quick_replies(current_step, collected, client)
+    step_instruction = _get_step_instruction(current_step, collected)
+    system_prompt = _build_system_prompt(collected, step_instruction, current_step, quick_replies)
+
+    history_rows = _load_chat_history(user_id, limit=20)
+    oai_messages = [{"role": "system", "content": system_prompt}]
+    for row in history_rows:
+        role = "assistant" if row["role"] == "ai" else "user"
+        content = row.get("message") or ""
+        if content:
+            oai_messages.append({"role": role, "content": content})
+    oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
+
+    input_type = "date_picker" if (current_step == "birth_date" and collected.get("_wants_date_picker")) else "text"
+
+    metadata = {
+        "quick_replies": quick_replies,
+        "onboarding_phase": "collecting",
+        "pet_id": None,
+        "pet_card": None,
+        "input_type": input_type,
+        "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+    }
+
+    return {
+        "type": "llm",
+        "oai_messages": oai_messages,
+        "metadata": metadata,
+        "user_chat_id": user_chat_id,
+        "user_id": user_id,
+        "current_step": current_step,
+        "collected_full": collected,
+    }

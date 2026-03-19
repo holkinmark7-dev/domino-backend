@@ -17,7 +17,7 @@ from routers.services.ai import generate_ai_response, generate_ai_response_strea
 from routers.services.symptom_registry import normalize_symptom
 from routers.services.symptom_class_registry import get_symptom_class
 from routers.services.episode_manager import process_event, update_episode_escalation
-from routers.onboarding_ai import handle_onboarding_ai
+from routers.onboarding_ai import handle_onboarding_ai, prepare_onboarding_for_stream
 from routers.services.clinical_router import build_full_clinical_decision
 from routers.services.decision_postprocess import postprocess_decision
 from routers.services.chat_helpers import (
@@ -1172,4 +1172,130 @@ def create_chat_message_stream(message: ChatMessage, request: Request = None, cu
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ── SSE Streaming endpoint for onboarding ───────────────────────────────────
+
+@router.post("/chat/onboarding/stream")
+@limiter.limit("10/minute")
+def create_onboarding_stream(message: ChatMessage, request: Request = None, current_user: dict = Depends(get_current_user)):
+    """
+    Streaming onboarding. Deterministic steps → single chunk.
+    LLM steps → streamed via OpenAI.
+    """
+    if isinstance(current_user, dict) and message.user_id != current_user["id"]:
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    ensure_user_exists(message.user_id)
+    _update_last_seen(message.user_id)
+
+    try:
+        result = prepare_onboarding_for_stream(
+            user_id=message.user_id,
+            message_text=message.message or "",
+            passport_ocr_data=message.passport_ocr_data,
+            breed_detection_data=message.breed_detection_data,
+        )
+    except Exception as e:
+        logger.error("[onboarding stream] prepare failed: %s", e)
+        # Fallback to regular handler
+        return handle_onboarding_ai(
+            user_id=message.user_id,
+            message_text=message.message or "",
+            passport_ocr_data=message.passport_ocr_data,
+            breed_detection_data=message.breed_detection_data,
+        )
+
+    # Deterministic step — return as single SSE chunk
+    if result["type"] == "final":
+        resp = result["response"]
+
+        def single_chunk_gen():
+            data = {
+                "t": resp.get("ai_response", ""),
+                "done": True,
+                "quick_replies": resp.get("quick_replies", []),
+                "collected": resp.get("collected", {}),
+                "onboarding_phase": resp.get("onboarding_phase", "collecting"),
+                "pet_id": resp.get("pet_id"),
+                "pet_card": resp.get("pet_card"),
+                "input_type": resp.get("input_type", "text"),
+            }
+            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            single_chunk_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    # LLM step — stream via OpenAI
+    oai_messages = result["oai_messages"]
+    metadata = result["metadata"]
+    user_chat_id = result.get("user_chat_id")
+    stream_user_id = result["user_id"]
+    current_step = result.get("current_step")
+    collected_full = result.get("collected_full", {})
+
+    def sse_onboarding_gen():
+        import openai as _oai
+        full_response = []
+
+        try:
+            oai_client = _oai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+            stream = oai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=oai_messages,
+                max_tokens=150,
+                temperature=0.3,
+                stream=True,
+            )
+
+            for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    text = delta.content
+                    full_response.append(text)
+                    yield f"data: {json.dumps({'t': text}, ensure_ascii=False)}\n\n"
+
+        except Exception as _stream_err:
+            logger.error("[onboarding stream] OpenAI error: %s", _stream_err)
+            from routers.onboarding_ai import _get_fallback_text
+            fallback = _get_fallback_text(current_step, collected_full)
+            full_response.append(fallback)
+            yield f"data: {json.dumps({'t': fallback}, ensure_ascii=False)}\n\n"
+
+        ai_text = "".join(full_response).strip()
+        if not ai_text:
+            from routers.onboarding_ai import _get_fallback_text
+            ai_text = _get_fallback_text(current_step, collected_full)
+            yield f"data: {json.dumps({'t': ai_text}, ensure_ascii=False)}\n\n"
+
+        # Post-processing: remove stop phrases, save
+        from routers.onboarding_ai import _remove_stop_phrases, _save_ai_message
+        ai_text = _remove_stop_phrases(ai_text)
+
+        # age_reacted flag
+        if current_step == "gender" and collected_full.get("age_years") is not None:
+            collected_full["_age_reacted"] = True
+            from routers.services.memory import get_user_flags, update_user_flags
+            uf = get_user_flags(stream_user_id)
+            uf["onboarding_collected"] = collected_full
+            update_user_flags(stream_user_id, uf)
+
+        _save_ai_message(stream_user_id, ai_text, None, user_chat_id)
+
+        # Final chunk with metadata
+        final = {
+            "t": "",
+            "done": True,
+            **metadata,
+        }
+        yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        sse_onboarding_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
