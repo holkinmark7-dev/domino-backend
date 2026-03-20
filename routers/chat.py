@@ -1197,8 +1197,10 @@ def create_onboarding_stream(message: ChatMessage, request: Request = None, curr
             passport_ocr_data=message.passport_ocr_data,
             breed_detection_data=message.breed_detection_data,
         )
+        print(f"[STREAM-ONBOARDING] Starting for user {message.user_id}, type: {result['type']}")
     except Exception as e:
         logger.error("[onboarding stream] prepare failed: %s", e)
+        print(f"[STREAM-ONBOARDING] PREPARE FAILED: {e}")
         # Fallback to regular handler
         return handle_onboarding_ai(
             user_id=message.user_id,
@@ -1257,6 +1259,7 @@ def create_onboarding_stream(message: ChatMessage, request: Request = None, curr
                 if delta and delta.content:
                     text = delta.content
                     full_response.append(text)
+                    print(f"[STREAM-ONBOARDING] Chunk: {text[:50]}")
                     yield f"data: {json.dumps({'t': text}, ensure_ascii=False)}\n\n"
 
         except Exception as _stream_err:
