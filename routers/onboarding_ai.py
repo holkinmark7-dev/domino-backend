@@ -364,6 +364,11 @@ def _validate_input_with_ai(text: str, field: str, collected: dict) -> dict:
             f'   "блять" → {{"valid": false, "hint": "Напиши своё имя — просто одно слово"}}\n'
             f'   "123" → {{"valid": false, "hint": "Как тебя зовут?"}}\n'
             f'   "что это" → {{"valid": false, "hint": "Мне нужно твоё имя — как обращаться?"}}\n'
+            f'   "Йо" → {{"valid": false, "hint": "Как мне к тебе обращаться?"}}\n'
+            f'   "Ку" → {{"valid": false, "hint": "Как тебя зовут?"}}\n'
+            f'   "Старт" → {{"valid": false, "hint": "Напиши своё имя"}}\n'
+            f'   "Го" → {{"valid": false, "hint": "Как тебя зовут?"}}\n'
+            f'ВАЖНО: слова из 1-2 букв (Ку, Йо, Го, Ну) — это НЕ имена. Команды (Старт, Start, Меню, Помощь) — тоже НЕ имена.\n'
             f'ОТВЕТ — только JSON, ничего больше.'
         ),
         "pet_name": (
@@ -408,6 +413,58 @@ def _validate_input_with_ai(text: str, field: str, collected: dict) -> dict:
     except Exception as e:
         logger.error("[validate_ai] %s", e)
         return {"valid": False, "hint": ""}
+
+
+def _check_breed_subtypes(breed_name: str, species: str = "dog") -> dict:
+    """
+    AI проверяет: порода точная или группа с подвидами?
+    Возвращает:
+      {"exact": True, "breed": "Мопс"} — записать как есть
+      {"exact": False, "options": ["Сибирский хаски", "Аляскинский хаски"]} — нужно уточнение
+    """
+    species_label = "собак" if species == "dog" else "кошек"
+
+    prompt = (
+        f'Порода {species_label}: "{breed_name}"\n\n'
+        f'Вопрос: это ТОЧНОЕ название одной конкретной породы, '
+        f'или это ОБЩЕЕ/СОКРАЩЁННОЕ название группы пород с подвидами?\n\n'
+        f'ПРАВИЛА:\n'
+        f'1. Если точная порода (Мопс, Бигль, Акита-ину, Мейн-кун, Бенгальская) — верни:\n'
+        f'   {{"exact": true, "breed": "Полное официальное название"}}\n'
+        f'2. Если группа/сокращение с подвидами — верни список подвидов (2-6 штук):\n'
+        f'   {{"exact": false, "options": ["Подвид 1", "Подвид 2", "Подвид 3"]}}\n'
+        f'3. Исправь опечатки в названии если есть\n\n'
+        f'Примеры:\n'
+        f'"Мопс" → {{"exact": true, "breed": "Мопс"}}\n'
+        f'"Хаски" → {{"exact": false, "options": ["Сибирский хаски", "Аляскинский хаски", "Аляскинский маламут"]}}\n'
+        f'"Овчарка" → {{"exact": false, "options": ["Немецкая овчарка", "Бельгийская малинуа", "Кавказская овчарка", "Среднеазиатская овчарка"]}}\n'
+        f'"Лабрадор" → {{"exact": true, "breed": "Лабрадор-ретривер"}}\n'
+        f'"Корги" → {{"exact": true, "breed": "Вельш-корги пемброк"}}\n'
+        f'"Британская" → {{"exact": false, "options": ["Британская короткошёрстная", "Британская длинношёрстная"]}}\n'
+        f'"Сфинкс" → {{"exact": false, "options": ["Канадский сфинкс", "Донской сфинкс", "Петерболд"]}}\n'
+        f'"Бигль" → {{"exact": true, "breed": "Бигль"}}\n'
+        f'"Шпиц" → {{"exact": false, "options": ["Померанский шпиц", "Немецкий шпиц", "Японский шпиц"]}}\n'
+        f'"Такса" → {{"exact": false, "options": ["Стандартная такса", "Миниатюрная такса", "Кроличья такса"]}}\n\n'
+        f'ОТВЕТ — только JSON, ничего больше.'
+    )
+
+    try:
+        oai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = oai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.0,
+        )
+        raw_response = (response.choices[0].message.content or "").strip()
+        raw_response = raw_response.replace("```json", "").replace("```", "").strip()
+        result = json.loads(raw_response)
+        logger.info("[ONB] breed subtypes: '%s' → %s", breed_name, result)
+        return result
+    except Exception as e:
+        logger.error("[ONB] breed subtypes error: %s", e)
+        # При ошибке — записать как есть
+        return {"exact": True, "breed": breed_name}
 
 
 def _parse_breed_with_gemini(msg: str, species: str, client) -> dict:
@@ -1161,9 +1218,19 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                 best_match = breed_name
 
         if best_score >= 70 and best_match:
+            # Быстрый кэш — словарь подвидов
             if low in _BREED_CLARIFICATIONS:
                 updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[low]
                 return updates
+            # AI проверка подвидов — для всего что не в словаре
+            subtype_result = _check_breed_subtypes(best_match, collected.get("species", "dog"))
+            if subtype_result.get("exact"):
+                updates["breed"] = subtype_result.get("breed", best_match)
+                return updates
+            elif subtype_result.get("options"):
+                updates["_breed_clarification_options"] = subtype_result["options"]
+                return updates
+            # Fallback — записать как есть
             updates["breed"] = best_match
             return updates
 
@@ -1172,8 +1239,17 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             result = _parse_breed_with_gemini(raw, collected.get("species", "dog"), client)
             if result.get("breed"):
                 breed_low = result["breed"].lower()
+                # Быстрый кэш
                 if breed_low in _BREED_CLARIFICATIONS:
                     updates["_breed_clarification_options"] = _BREED_CLARIFICATIONS[breed_low]
+                    return updates
+                # AI проверка подвидов
+                subtype_result = _check_breed_subtypes(result["breed"], collected.get("species", "dog"))
+                if subtype_result.get("exact"):
+                    updates["breed"] = subtype_result.get("breed", result["breed"])
+                    return updates
+                elif subtype_result.get("options"):
+                    updates["_breed_clarification_options"] = subtype_result["options"]
                     return updates
                 updates["breed"] = result["breed"]
             elif result.get("needs_clarification") and result.get("options"):
@@ -1522,6 +1598,20 @@ def handle_onboarding_ai(
     """
     # 1. Load accumulated collected data from user flags
     user_flags = get_user_flags(user_id)
+
+    # Онбординг уже завершён — не обрабатывать повторно
+    if user_flags.get("onboarding_complete"):
+        logger.info("[ONB] Already complete, returning guard response")
+        return JSONResponse(content={
+            "ai_response": "",
+            "quick_replies": [],
+            "onboarding_phase": "complete",
+            "pet_id": user_flags.get("onboarding_pet_id"),
+            "pet_card": None,
+            "input_type": "text",
+            "collected": {},
+        })
+
     collected: dict = user_flags.get("onboarding_collected") or {}
 
     # 2. Handle special inputs (OCR, breed detection, avatar)
@@ -1691,6 +1781,7 @@ def handle_onboarding_ai(
             pet_id, short_id = create_result
             user_flags["onboarding_collected"] = None
             user_flags["onboarding_pet_id"] = pet_id
+            user_flags["onboarding_complete"] = True
             update_user_flags(user_id, user_flags)
 
             pet_card = None  # TODO: заменить на walkthrough
@@ -1935,6 +2026,7 @@ def prepare_onboarding_for_stream(
             pet_id, short_id = create_result
             user_flags["onboarding_collected"] = None
             user_flags["onboarding_pet_id"] = pet_id
+            user_flags["onboarding_complete"] = True
             update_user_flags(user_id, user_flags)
             pet_card = None
             ai_text = _build_completion_text(collected)
