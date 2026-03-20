@@ -57,7 +57,7 @@ def _create_pet(user_id: str, collected: dict) -> tuple[str, int | None] | None:
             "gender": gender,
             "neutered": is_neutered,
             "birth_date": birth_date,
-            "age_years": age_years,
+            "age_years": int(age_years) if age_years is not None else None,
             "color": collected.get("color"),
             "avatar_url": collected.get("avatar_url"),
         }
