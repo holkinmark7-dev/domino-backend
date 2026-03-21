@@ -250,7 +250,7 @@ def handle_onboarding_ai(
                            len(ai_text) if ai_text else 0)
             return JSONResponse(content={
                 "ai_response": ai_text,
-                "quick_replies": [],
+                "quick_replies": [{"label": "Познакомиться с приложением", "value": "WALKTHROUGH", "preferred": True}],
                 "onboarding_phase": "complete",
                 "pet_id": pet_id,
                 "pet_card": pet_card,
@@ -285,21 +285,41 @@ def handle_onboarding_ai(
         collected, step_instruction, current_step, quick_replies
     )
 
+    # Шаги где текст точный — AI не нужна свобода
+    _EXACT_STEPS = {
+        "owner_name", "pet_name", "species_guess_dog", "species_guess_cat",
+        "species", "passport_offer", "gender", "is_neutered", "avatar",
+    }
+    # Шаги где нужна адаптация — AI получает историю
+    _CREATIVE_STEPS = {"goal", "breed", "birth_date"}
+
+    is_exact = current_step in _EXACT_STEPS
+
     # 14. Call OpenAI GPT-4o-mini — text only
     try:
         oai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
-        history_rows = _load_chat_history(user_id, limit=20)
-        oai_messages = [{"role": "system", "content": system_prompt}]
-        for row in history_rows:
-            role = "assistant" if row["role"] == "ai" else "user"
-            content = row.get("message") or ""
-            if content:
-                oai_messages.append({"role": role, "content": content})
-        oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
+        if is_exact:
+            # Точные шаги: только промпт + текущее сообщение, без истории
+            oai_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": actual_message or "Начни онбординг"},
+            ]
+            temp = 0.0
+        else:
+            # Творческие шаги: промпт + история + сообщение
+            history_rows = _load_chat_history(user_id, limit=20)
+            oai_messages = [{"role": "system", "content": system_prompt}]
+            for row in history_rows:
+                role = "assistant" if row["role"] == "ai" else "user"
+                content = row.get("message") or ""
+                if content:
+                    oai_messages.append({"role": role, "content": content})
+            oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
+            temp = 0.3
 
-        logger.warning("[ONB] === AI CALL === step=%s instruction_start='%s' buttons=%s msg='%s' history_len=%d",
-                       current_step,
+        logger.warning("[ONB] === AI CALL === step=%s exact=%s temp=%s instruction_start='%s' buttons=%s msg='%s' history_len=%d",
+                       current_step, is_exact, temp,
                        step_instruction[:80],
                        [q["label"] for q in quick_replies][:4] if quick_replies else [],
                        actual_message[:50] if actual_message else "EMPTY",
@@ -309,14 +329,40 @@ def handle_onboarding_ai(
             model="gpt-4o-mini",
             messages=oai_messages,
             max_tokens=150,
-            temperature=0.3,
+            temperature=temp,
         )
         ai_text = (response.choices[0].message.content or "").strip()
         ai_text = _remove_stop_phrases(ai_text)
+
         logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
+
     except Exception as e:
         logger.error("[oai_call] %s", e)
         ai_text = ""
+
+    # Уровень 3: проверка ответа AI — содержит ли ключевые элементы шага?
+    _STEP_KEYWORDS = {
+        "owner_name": ["зовут", "имя", "тебя"],
+        "pet_name": ["зовут", "питом", "кличк"],
+        "species_guess_dog": ["собак", "пёс", "пес", "угадал"],
+        "species_guess_cat": ["кот", "угадал"],
+        "species": ["кошк", "собак", "кот"],
+        "passport_offer": ["паспорт", "сфотограф", "перенес"],
+        "breed": ["поро", "какая", "уточн", "фото", "пиши", "загруз"],
+        "birth_date": ["родил", "когда", "дат", "возраст", "сколько"],
+        "gender": ["мальчик", "девочк", "пол"],
+        "is_neutered": ["кастр", "стерил"],
+        "avatar": ["фото", "профил", "последн", "штрих", "мордаш"],
+    }
+
+    keywords = _STEP_KEYWORDS.get(current_step, [])
+    if keywords and ai_text:
+        text_lower = ai_text.lower()
+        has_keyword = any(kw in text_lower for kw in keywords)
+        if not has_keyword:
+            logger.warning("[ONB] AI text FAILED keyword check for step=%s, replacing with fallback. AI said: '%s'",
+                          current_step, ai_text[:80])
+            ai_text = _get_fallback_text(current_step, collected)
 
     # 15. Fallback if empty response
     if not ai_text:
@@ -490,7 +536,7 @@ def prepare_onboarding_for_stream(
             ai_text = _build_completion_text(collected)
             _save_ai_message(user_id, ai_text, pet_id, user_chat_id)
             return {"type": "final", "response": {
-                "ai_response": ai_text, "quick_replies": [],
+                "ai_response": ai_text, "quick_replies": [{"label": "Познакомиться с приложением", "value": "WALKTHROUGH", "preferred": True}],
                 "onboarding_phase": "complete", "pet_id": pet_id,
                 "pet_card": pet_card, "input_type": "text",
                 "collected": {k: v for k, v in collected.items() if not k.startswith("_")},

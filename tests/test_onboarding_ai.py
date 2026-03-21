@@ -385,14 +385,22 @@ def test_non_json_gemini_response():
 # ── Test 12: Chat history loaded for Gemini context ──────────────────────────
 
 def test_chat_history_used_as_context():
-    """Chat history is passed to OpenAI as messages context."""
+    """Chat history is passed to OpenAI as messages context (creative steps only)."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
+
+    # Use a creative step (breed) so history is included
+    flags_with_breed_step = {
+        "onboarding_collected": {
+            "owner_name": "Марк", "pet_name": "Рекс", "goal": "Слежу за здоровьем",
+            "species": "dog", "_passport_skipped": True,
+        }
+    }
 
     history_rows = [
         {"role": "ai", "message": "Привет. Как тебя зовут?"},
         {"role": "user", "message": "Марк"},
-        {"role": "ai", "message": "Марк — и кто же у тебя живёт?"},
+        {"role": "ai", "message": "Какой породы Рекс?"},
     ]
 
     captured_messages = []
@@ -406,7 +414,7 @@ def test_chat_history_used_as_context():
     mock_oai_client.chat.completions.create.side_effect = capture_create
 
     with (
-        _patch(_PATCH_FLAGS, return_value={}),
+        _patch(_PATCH_FLAGS, return_value=flags_with_breed_step),
         _patch(_PATCH_UPDATE),
         _patch(_PATCH_HISTORY, return_value=history_rows),
         _patch(_PATCH_SAVE_USER, return_value=None),
@@ -417,7 +425,7 @@ def test_chat_history_used_as_context():
     ):
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
-        handle_onboarding_ai("user-1", "Рекс")
+        handle_onboarding_ai("user-1", "Хаски")
 
     # AI-only parsing may call OpenAI for validation first,
     # then the main chat call adds system + history + user.
