@@ -196,12 +196,7 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                     return updates
             # "Другая порода" обработается ниже — НЕ return
 
-        # === Словарь сокращений ===
-        shortcut = _BREED_SHORTCUTS.get(low)
-        if shortcut:
-            updates["breed"] = shortcut
-            return updates
-
+        # === "Не знаю" / "Другая порода" / "Пропустить" / BREED_PHOTO / метис ===
         if any(w in low for w in ["не знаю породу", "не знаю", "хз", "без понятия"]):
             updates["_breed_unknown"] = True
             return updates
@@ -233,6 +228,16 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
                     break
         if clarify:
             updates["_breed_clarification_options"] = clarify
+            return updates
+
+        # === Словарь сокращений (с проверкой подвидов) ===
+        shortcut = _BREED_SHORTCUTS.get(low)
+        if shortcut:
+            subtype_result = _check_breed_subtypes(shortcut, collected.get("species", "dog"))
+            if not subtype_result.get("exact") and subtype_result.get("options"):
+                updates["_breed_clarification_options"] = subtype_result["options"]
+                return updates
+            updates["breed"] = subtype_result.get("breed", shortcut)
             return updates
 
         # === УРОВЕНЬ 1: Rapidfuzz (порог 85%) ===
