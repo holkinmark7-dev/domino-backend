@@ -209,7 +209,7 @@ def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -
 def _build_completion_text(collected: dict) -> str:
     """Финальный текст по goal."""
     pet = collected.get("pet_name", "питомец")
-    pet_gen = _decline_pet_name(pet, "gen")
+    pet_gen = _decline_pet_name(pet, "acc")
     goal = collected.get("goal", "")
 
     base = f"Готово — я теперь знаю {pet_gen}. Профиль создан"
