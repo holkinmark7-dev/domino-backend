@@ -353,28 +353,30 @@ def handle_onboarding_ai(
         ai_text = ""
 
     # Уровень 3: проверка ответа AI — содержит ли ключевые элементы шага?
-    _STEP_KEYWORDS = {
-        "owner_name": ["зовут", "имя", "тебя"],
-        "pet_name": ["зовут", "питом", "кличк"],
-        "species_guess_dog": ["собак", "пёс", "пес", "угадал"],
-        "species_guess_cat": ["кот", "угадал"],
-        "species": ["кошк", "собак", "кот"],
-        "passport_offer": ["паспорт", "сфотограф", "перенес"],
-        "breed": ["поро", "какая", "уточн", "фото", "пиши", "загруз"],
-        "birth_date": ["родил", "когда", "дат", "возраст", "сколько"],
-        "gender": ["мальчик", "девочк", "пол"],
-        "is_neutered": ["кастр", "стерил"],
-        "avatar": ["фото", "профил", "последн", "штрих", "мордаш"],
-    }
+    # Keyword check пропускается для ЦЕЛЬ-инструкций (свободный режим)
+    if not step_instruction.startswith("ЦЕЛЬ:"):
+        _STEP_KEYWORDS = {
+            "owner_name": ["зовут", "имя", "тебя"],
+            "pet_name": ["зовут", "питом", "кличк"],
+            "species_guess_dog": ["собак", "пёс", "пес", "угадал"],
+            "species_guess_cat": ["кот", "угадал"],
+            "species": ["кошк", "собак", "кот"],
+            "passport_offer": ["паспорт", "сфотограф", "перенес"],
+            "breed": ["поро", "какая", "уточн", "фото", "пиши", "загруз"],
+            "birth_date": ["родил", "когда", "дат", "возраст", "сколько"],
+            "gender": ["мальчик", "девочк", "пол"],
+            "is_neutered": ["кастр", "стерил"],
+            "avatar": ["фото", "профил", "последн", "штрих", "мордаш"],
+        }
 
-    keywords = _STEP_KEYWORDS.get(current_step, [])
-    if keywords and ai_text:
-        text_lower = ai_text.lower()
-        has_keyword = any(kw in text_lower for kw in keywords)
-        if not has_keyword:
-            logger.warning("[ONB] AI text FAILED keyword check for step=%s, replacing with fallback. AI said: '%s'",
-                          current_step, ai_text[:80])
-            ai_text = _get_fallback_text(current_step, collected)
+        keywords = _STEP_KEYWORDS.get(current_step, [])
+        if keywords and ai_text:
+            text_lower = ai_text.lower()
+            has_keyword = any(kw in text_lower for kw in keywords)
+            if not has_keyword:
+                logger.warning("[ONB] AI text FAILED keyword check for step=%s, replacing with fallback. AI said: '%s'",
+                              current_step, ai_text[:80])
+                ai_text = _get_fallback_text(current_step, collected)
 
     # 15. Fallback if empty response
     if not ai_text:
