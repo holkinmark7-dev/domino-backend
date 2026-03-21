@@ -299,7 +299,7 @@ def handle_onboarding_ai(
 
     # Шаги где текст точный — AI не нужна свобода
     _EXACT_STEPS = {
-        "owner_name", "pet_name", "species_guess_dog", "species_guess_cat",
+        "owner_name", "species_guess_dog", "species_guess_cat",
         "species", "passport_offer", "gender", "is_neutered", "avatar",
     }
     # Шаги где нужна адаптация — AI получает историю

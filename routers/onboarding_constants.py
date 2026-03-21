@@ -7,11 +7,18 @@ from pathlib import Path
 
 _DESIGN_DIR = Path(__file__).parent.parent / "design-reference"
 
+# Новая система мышления (v2.3) — приоритет
+_PROMPT_CORE_PATH = _DESIGN_DIR / "dominik-prompt-core.txt"
 _CHARACTER_PATH = _DESIGN_DIR / "dominik-character.txt"
-try:
-    _CHARACTER_TEXT: str = _CHARACTER_PATH.read_text(encoding="utf-8")
-except FileNotFoundError:
-    raise RuntimeError(f"[onboarding_ai] Характер не найден: {_CHARACTER_PATH}")
+
+if _PROMPT_CORE_PATH.exists():
+    _CHARACTER_TEXT: str = _PROMPT_CORE_PATH.read_text(encoding="utf-8")
+else:
+    # Fallback на старый файл
+    try:
+        _CHARACTER_TEXT: str = _CHARACTER_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise RuntimeError(f"[onboarding_ai] Характер не найден: {_CHARACTER_PATH}")
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
