@@ -207,33 +207,19 @@ def _build_pet_card(collected: dict, pet_id: str, short_id: int | None = None) -
 
 
 def _build_completion_text(collected: dict) -> str:
-    """Финальный текст по goal. Вызывается только при complete."""
+    """Финальный текст по goal."""
     pet = collected.get("pet_name", "питомец")
     pet_gen = _decline_pet_name(pet, "gen")
     goal = collected.get("goal", "")
 
+    base = f"Готово — я теперь знаю {pet_gen}. Профиль создан"
+
     if goal == "Есть тревога":
-        return (
-            f"Профиль {pet_gen} готов — все данные записаны. "
-            f"Теперь расскажи что тебя беспокоит."
-        )
+        return f"{base}. Теперь расскажи что тебя беспокоит."
     if "здоровь" in goal.lower():
-        return (
-            f"Профиль {pet_gen} готов. "
-            f"Все данные на месте — можешь редактировать в любое время. "
-            f"Пиши если что-то понадобится."
-        )
+        return f"{base}, всё на месте. Пиши когда понадобится помощь."
     if "привив" in goal.lower():
-        return (
-            f"Профиль {pet_gen} создан. "
-            f"Загляни в профиль — начнём с прививок."
-        )
+        return f"{base} — загляни, начнём с прививок."
     if "дневник" in goal.lower():
-        return (
-            f"Профиль {pet_gen} готов. "
-            f"Пиши мне когда нужно — всё запишу."
-        )
-    return (
-        f"Профиль {pet_gen} готов. "
-        f"Все данные записаны — можешь редактировать в любое время."
-    )
+        return f"{base}. Пиши мне когда нужно — всё запишу."
+    return f"{base}, всё на месте."

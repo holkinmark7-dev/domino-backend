@@ -72,6 +72,18 @@ def handle_onboarding_ai(
 
     collected: dict = user_flags.get("onboarding_collected") or {}
 
+    # Онбординг заблокирован (пользователь отказался 3 раза)
+    if collected.get("_onboarding_blocked"):
+        return JSONResponse(content={
+            "ai_response": "Если передумаешь — я здесь. Напиши имя чтобы начать заново.",
+            "quick_replies": [],
+            "onboarding_phase": "collecting",
+            "pet_id": None,
+            "pet_card": None,
+            "input_type": "text",
+            "collected": {},
+        })
+
     # 2. Handle special inputs (OCR, breed detection, avatar)
     actual_message = message_text
     logger.info("[ONB] === NEW REQUEST === msg='%s' len=%d passport=%s breed=%s step_before_parse=%s",

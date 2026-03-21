@@ -32,9 +32,19 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── owner_name ───
     if step == "owner_name":
-        # Отказ назвать имя — принять
-        if any(w in low for w in ["не скажу", "аноним", "не хочу", "не твоё дело", "не твое дело"]):
-            updates["owner_name"] = "Друг"
+        # Явный отказ — увеличить счётчик
+        refusal_words = ["не скажу", "аноним", "не хочу", "не твоё дело", "не твое дело",
+                         "не буду", "отстань", "зачем тебе", "какая разница"]
+        if any(w in low for w in refusal_words):
+            count = collected.get("_owner_name_refusals", 0) + 1
+            updates["_owner_name_refusals"] = count
+            if count == 1:
+                updates["_input_hint"] = "Мне нужно имя чтобы обращаться к тебе. Как тебя зовут?"
+            elif count == 2:
+                updates["_input_hint"] = "Без имени не смогу вести диалог — мне важно знать к кому обращаюсь."
+            else:
+                updates["_input_hint"] = "Понимаю. Видимо приложение сейчас не нужно. Если передумаешь — я здесь."
+                updates["_onboarding_blocked"] = True
             return updates
 
         # Пустое
@@ -54,18 +64,37 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             # Проверка кодом: минимум 2 буквы, начинается с заглавной
             if len(name) >= 2 and name[0].isupper():
                 updates["owner_name"] = name
+                updates["_onboarding_blocked"] = False
+                updates["_owner_name_refusals"] = 0
                 return updates
 
-        # AI сказал невалидно или ошибка — hint для переспроса
-        hint = ai_result.get("hint", "Как мне к тебе обращаться?")
-        updates["_input_hint"] = hint
+        # AI сказал невалидно или ошибка — эскалация
+        count = collected.get("_owner_name_refusals", 0) + 1
+        updates["_owner_name_refusals"] = count
+        if count >= 3:
+            updates["_input_hint"] = "Понимаю. Видимо приложение сейчас не нужно. Если передумаешь — я здесь."
+            updates["_onboarding_blocked"] = True
+        elif count == 2:
+            updates["_input_hint"] = "Без имени не смогу вести диалог — мне важно знать к кому обращаюсь."
+        else:
+            updates["_input_hint"] = ai_result.get("hint", "Мне нужно имя чтобы обращаться к тебе. Как тебя зовут?")
         return updates
 
     # ─── pet_name ───
     elif step == "pet_name":
-        # "Не знаю"
-        if any(w in low for w in ["не знаю", "нет имени", "без имени", "пока нет"]):
-            updates["pet_name"] = "Питомец"
+        # Отказ назвать кличку — эскалация
+        refusal_words_pet = ["не знаю", "нет имени", "без имени", "пока нет",
+                             "не скажу", "не хочу", "отстань", "зачем"]
+        if any(w in low for w in refusal_words_pet):
+            count = collected.get("_pet_name_refusals", 0) + 1
+            updates["_pet_name_refusals"] = count
+            if count == 1:
+                updates["_input_hint"] = "Мне нужна кличка чтобы вести карточку питомца. Как зовут?"
+            elif count == 2:
+                updates["_input_hint"] = "Без клички не получится создать профиль. Как зовут питомца?"
+            else:
+                updates["_input_hint"] = "Понимаю. Видимо сейчас не время. Если передумаешь — я здесь."
+                updates["_onboarding_blocked"] = True
             return updates
 
         # Пустое
@@ -84,11 +113,20 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             name = ai_result["value"].strip()
             if len(name) >= 2 and name[0].isupper():
                 updates["pet_name"] = name
+                updates["_onboarding_blocked"] = False
+                updates["_pet_name_refusals"] = 0
                 return updates
 
-        # AI сказал невалидно — hint
-        hint = ai_result.get("hint", "Как зовут питомца?")
-        updates["_input_hint"] = hint
+        # AI сказал невалидно — эскалация
+        count = collected.get("_pet_name_refusals", 0) + 1
+        updates["_pet_name_refusals"] = count
+        if count >= 3:
+            updates["_input_hint"] = "Понимаю. Видимо сейчас не время. Если передумаешь — я здесь."
+            updates["_onboarding_blocked"] = True
+        elif count == 2:
+            updates["_input_hint"] = "Без клички не получится создать профиль. Как зовут питомца?"
+        else:
+            updates["_input_hint"] = ai_result.get("hint", "Мне нужна кличка чтобы вести карточку питомца. Как зовут?")
         return updates
 
     # ─── species_guess_dog ───
@@ -152,11 +190,17 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         if clean == "кот" or clean.startswith("кот "):
             updates["species"] = "cat"
             updates["gender"] = "male"
+            updates["_onboarding_blocked"] = False
+            updates["_species_refusals"] = 0
         elif "кошка" in clean:
             updates["species"] = "cat"
             updates["gender"] = "female"
+            updates["_onboarding_blocked"] = False
+            updates["_species_refusals"] = 0
         elif any(w in clean for w in ["собака", "пёс", "пес", "щенок"]):
             updates["species"] = "dog"
+            updates["_onboarding_blocked"] = False
+            updates["_species_refusals"] = 0
         else:
             exotic = [
                 "попугай", "хомяк", "рыбка", "черепаха", "кролик",
@@ -166,6 +210,18 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             ]
             if any(w in low for w in exotic):
                 updates["_exotic_attempt"] = True
+
+            # Ни вид, ни экзотика — считаем как отказ
+            if not updates.get("species") and not updates.get("_exotic_attempt"):
+                count = collected.get("_species_refusals", 0) + 1
+                updates["_species_refusals"] = count
+                if count == 1:
+                    updates["_input_hint"] = "Мне нужно знать — кошка или собака. Без этого не смогу помочь."
+                elif count == 2:
+                    updates["_input_hint"] = "Кошка или собака? Это важно для рекомендаций по здоровью."
+                else:
+                    updates["_input_hint"] = "Понимаю. Если передумаешь — я здесь."
+                    updates["_onboarding_blocked"] = True
 
     # ─── passport_offer ───
     elif step == "passport_offer":
