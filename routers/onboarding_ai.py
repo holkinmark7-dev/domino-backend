@@ -360,6 +360,8 @@ def handle_onboarding_ai(
                 raw_response = raw_response.replace("```json", "").replace("```", "").strip()
                 parsed = json.loads(raw_response)
                 ai_text = parsed.get("response", "").strip()
+                if ai_text and ai_text[0].islower():
+                    ai_text = ai_text[0].upper() + ai_text[1:]
                 thinking = parsed.get("thinking", "")
                 if thinking:
                     logger.info("[ONB] THINKING: %s", thinking[:200])
