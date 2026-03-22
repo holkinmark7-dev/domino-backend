@@ -29,6 +29,10 @@ def _decline_pet_name(name: str, case: str) -> str:
         }
         return forms.get(case, name)
 
+    # Несклоняемые: имена на -и, -о, -у, -э, -ю, -е (кроме -ка, -а, -я)
+    if name and name[-1].lower() in ('и', 'о', 'у', 'э', 'ю'):
+        return name
+
     if name.endswith("ка"):
         stem = name[:-2]
         forms = {
@@ -509,6 +513,7 @@ def _remove_stop_phrases(text: str) -> str:
         r'^Ок[,\.]?\s*',
         r'^Разумеется[,\.]?\s*',
         r'^Приятно познакомиться[,\.]?\s*',
+        r'^Спасибо[,\.]?\s*',
     ]
     for pattern in stop_starts:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
