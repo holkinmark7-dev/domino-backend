@@ -297,15 +297,10 @@ def handle_onboarding_ai(
         collected, step_instruction, current_step, quick_replies
     )
 
-    # Шаги где текст точный — AI не нужна свобода
-    _EXACT_STEPS = {
-        "owner_name", "species_guess_dog", "species_guess_cat",
-        "species", "passport_offer",
-    }
-    # Шаги где нужна адаптация — AI получает историю
-    _CREATIVE_STEPS = {"goal", "breed", "birth_date"}
-
-    is_exact = current_step in _EXACT_STEPS
+    # Режим определяется инструкцией, не списком шагов
+    # "Скажи РОВНО" = точный текст, без истории, temp 0.0
+    # "ЦЕЛЬ:" = AI думает сам, с историей, temp 0.3
+    is_exact = step_instruction.startswith("Скажи РОВНО")
 
     # 14. Call OpenAI GPT-4o-mini — text only
     try:

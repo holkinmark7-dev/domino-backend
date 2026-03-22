@@ -446,7 +446,12 @@ def _build_system_prompt(
 
     # --- Hint если пользователь ввёл мусор ---
     hint = collected.get("_input_hint", "")
-    hint_block = f"\nПОЛЬЗОВАТЕЛЬ НАПИСАЛ НЕ ТО. Мягко направь: {hint}\n" if hint else ""
+    if hint and step_instruction.startswith("ЦЕЛЬ:"):
+        hint_block = "\nПользователь ответил не по теме. Переспроси по-другому — у тебя есть цель.\n"
+    elif hint:
+        hint_block = f"\nПОЛЬЗОВАТЕЛЬ НАПИСАЛ НЕ ТО. Мягко направь: {hint}\n"
+    else:
+        hint_block = ""
 
     # --- Сборка ---
     return (
