@@ -2,6 +2,7 @@
 # AI-driven onboarding v2.0 — backend controls steps, Gemini writes text only.
 # Main handler + re-exports for backward compatibility.
 
+import json
 import os
 import logging
 
@@ -302,19 +303,25 @@ def handle_onboarding_ai(
     # "ЦЕЛЬ:" = AI думает сам, с историей, temp 0.3
     is_exact = step_instruction.startswith("Скажи РОВНО")
 
-    # 14. Call OpenAI GPT-4o-mini — text only
+    # 14. Call OpenAI GPT-4o
     try:
         oai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
         if is_exact:
-            # Точные шаги: только промпт + текущее сообщение, без истории
             oai_messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": actual_message or "Начни онбординг"},
             ]
-            temp = 0.0
+            response = oai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=oai_messages,
+                max_tokens=150,
+                temperature=0.0,
+            )
+            ai_text = (response.choices[0].message.content or "").strip()
+
         else:
-            # Творческие шаги: промпт + история + сообщение
+            # Creative: structured chain of thought
             history_rows = _load_chat_history(user_id, limit=20)
             oai_messages = [{"role": "system", "content": system_prompt}]
             for row in history_rows:
@@ -322,23 +329,44 @@ def handle_onboarding_ai(
                 content = row.get("message") or ""
                 if content:
                     oai_messages.append({"role": role, "content": content})
-            oai_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
-            temp = 0.3
 
-        logger.warning("[ONB] === AI CALL === step=%s exact=%s temp=%s instruction_start='%s' buttons=%s msg='%s' history_len=%d",
-                       current_step, is_exact, temp,
-                       step_instruction[:80],
-                       [q["label"] for q in quick_replies][:4] if quick_replies else [],
-                       actual_message[:50] if actual_message else "EMPTY",
-                       len(oai_messages))
+            # Добавить инструкцию structured output
+            thinking_instruction = (
+                "\n\nФОРМАТ ОТВЕТА: верни ТОЛЬКО валидный JSON:\n"
+                '{"thinking": "твой внутренний анализ: что сказал пользователь, '
+                'что имел в виду, какое настроение, что ты уже говорил — не повторяйся, '
+                'как это связано с целью", '
+                '"response": "твой ответ пользователю — 1-2 предложения"}\n'
+                "В поле thinking — анализируй. В поле response — пиши ответ.\n"
+                "Пользователь увидит ТОЛЬКО response. Thinking — твой внутренний процесс.\n"
+                "ОТВЕТ — ТОЛЬКО JSON, без ```json, без пояснений."
+            )
 
-        response = oai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=oai_messages,
-            max_tokens=150,
-            temperature=temp,
-        )
-        ai_text = (response.choices[0].message.content or "").strip()
+            oai_messages.append({
+                "role": "user",
+                "content": (actual_message or "Начни онбординг") + thinking_instruction,
+            })
+
+            response = oai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=oai_messages,
+                max_tokens=300,
+                temperature=0.5,
+            )
+            raw_response = (response.choices[0].message.content or "").strip()
+
+            # Парсинг JSON
+            try:
+                raw_response = raw_response.replace("```json", "").replace("```", "").strip()
+                parsed = json.loads(raw_response)
+                ai_text = parsed.get("response", "").strip()
+                thinking = parsed.get("thinking", "")
+                if thinking:
+                    logger.info("[ONB] THINKING: %s", thinking[:200])
+            except (json.JSONDecodeError, AttributeError):
+                logger.warning("[ONB] Failed to parse structured output, using raw: %s", raw_response[:100])
+                ai_text = raw_response
+
         ai_text = _remove_stop_phrases(ai_text)
 
         logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
