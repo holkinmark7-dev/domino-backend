@@ -150,8 +150,14 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
             return []
         photo_age = collected.get("_photo_age_estimate", "")
         if photo_age:
+            import re as _re
+            age_clean = photo_age
+            bracket_match = _re.search(r'\(([^)]+)\)', photo_age)
+            if bracket_match:
+                age_clean = bracket_match.group(1)
+            age_clean = age_clean.replace("~", "").strip()
             return [
-                {"label": f"Оставить {photo_age}", "value": f"__photo_age_confirm__{photo_age}", "preferred": True},
+                {"label": f"Оставить {age_clean}", "value": f"__photo_age_confirm__{photo_age}", "preferred": True},
                 {"label": "Указать дату", "value": "Выбрать дату", "preferred": False},
                 {"label": "Возраст другой", "value": "Примерный возраст", "preferred": False},
             ]

@@ -120,7 +120,13 @@ def get_step_text(step: str, collected: dict) -> str:
     if step == "birth_date":
         photo_age = collected.get("_photo_age_estimate", "")
         if photo_age:
-            return f"По фото — {pet_dat} примерно {photo_age}. Если знаешь точную дату рождения — напиши. Или оставим так."
+            import re as _re
+            age_clean = photo_age
+            bracket_match = _re.search(r'\(([^)]+)\)', photo_age)
+            if bracket_match:
+                age_clean = bracket_match.group(1)
+            age_clean = age_clean.replace("~", "").strip()
+            return f"По фото — {pet_dat} примерно {age_clean}. Если знаешь точную дату рождения — напиши. Или оставим так."
         breed = collected.get("breed", "")
         if breed and breed != "Метис":
             return None  # AI реакция на породу
