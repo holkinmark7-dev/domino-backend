@@ -7,6 +7,16 @@
 from routers.onboarding_utils import _decline_pet_name
 
 
+def _age_word(age: int) -> str:
+    """Правильное склонение: 1 год, 2 года, 5 лет."""
+    if age % 10 == 1 and age % 100 != 11:
+        return f"{age} год"
+    elif age % 10 in (2, 3, 4) and age % 100 not in (12, 13, 14):
+        return f"{age} года"
+    else:
+        return f"{age} лет"
+
+
 def get_step_text(step: str, collected: dict) -> str:
     """Возвращает готовый текст Dominik для текущего шага."""
 
@@ -108,9 +118,13 @@ def get_step_text(step: str, collected: dict) -> str:
     # BIRTH_DATE
     # ═══════════════════════════════════
     if step == "birth_date":
-        # Реакция на породу — единственное место где нужен AI
-        # None = нужен AI для реакции на породу
-        return None
+        photo_age = collected.get("_photo_age_estimate", "")
+        if photo_age:
+            return f"По фото — {pet_dat} примерно {photo_age}. Если знаешь точную дату рождения — напиши. Или оставим так."
+        breed = collected.get("breed", "")
+        if breed and breed != "Метис":
+            return None  # AI реакция на породу
+        return f"Когда родился {pet}?"
 
     # ═══════════════════════════════════
     # GENDER
@@ -119,21 +133,21 @@ def get_step_text(step: str, collected: dict) -> str:
         age_text = ""
         if age is not None and not collected.get("_age_reacted"):
             if age < 1:
-                age_text = f"Малыш ещё. "
-            elif age == 1:
-                age_text = f"Годик — энергии на десятерых. "
-            elif age <= 3:
-                age_text = f"{int(age)} года — энергии на десятерых. "
-            elif age <= 7:
-                age_text = f"{int(age)} лет — самый расцвет. "
+                age_text = "Малыш ещё. "
             else:
-                age_text = f"{int(age)} лет — мудрый. "
+                age_text = f"{_age_word(int(age))} — "
+                if age <= 3:
+                    age_text += "энергии на десятерых. "
+                elif age <= 7:
+                    age_text += "самый расцвет. "
+                else:
+                    age_text += "мудрый. "
 
         hint = collected.get("_gender_hint", "")
         if hint == "male":
-            return f"{age_text}{pet} — мальчик?"
+            return f"{age_text}{pet} — мальчик, верно?"
         if hint == "female":
-            return f"{age_text}{pet} — девочка?"
+            return f"{age_text}{pet} — девочка, верно?"
         return f"{age_text}{pet} — мальчик или девочка?"
 
     # ═══════════════════════════════════

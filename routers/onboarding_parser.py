@@ -161,6 +161,15 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
         updates["_photo_offer_done"] = True
         return updates
 
+    # ─── photo age confirm ───
+    elif raw and raw.startswith("__photo_age_confirm__"):
+        age_str = raw.replace("__photo_age_confirm__", "")
+        digits = re.findall(r'\d+', age_str)
+        if digits:
+            updates["age_years"] = int(digits[0])
+            updates["_age_approximate"] = True
+        return updates
+
     # ─── species_guess_dog ───
     elif step == "species_guess_dog":
         if any(w in clean for w in ["да", "пёс", "пес", "собака", "угадал"]):
