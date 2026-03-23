@@ -65,7 +65,7 @@ def get_step_text(step: str, collected: dict) -> str:
     # PHOTO_OFFER
     # ═══════════════════════════════════
     if step == "photo_offer":
-        return f"{owner}, скинь фото {pet_gen} — узнаю породу и возраст."
+        return f"{owner}, пришли фото {pet_gen} — узнаю породу и возраст."
 
     # ═══════════════════════════════════
     # SPECIES_GUESS
