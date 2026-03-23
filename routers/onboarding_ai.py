@@ -111,6 +111,8 @@ def handle_onboarding_ai(
     elif breed_detection_data and breed_detection_data.get("success"):
         breeds = breed_detection_data.get("breeds", [])
         color = breed_detection_data.get("color")
+        if color:
+            color = color[0].upper() + color[1:]
         age_estimate = breed_detection_data.get("age_estimate")
         confidence = breed_detection_data.get("confidence", 0)
 
@@ -482,6 +484,8 @@ def prepare_onboarding_for_stream(
     elif breed_detection_data and breed_detection_data.get("success"):
         breeds = breed_detection_data.get("breeds", [])
         color = breed_detection_data.get("color")
+        if color:
+            color = color[0].upper() + color[1:]
         if breeds:
             top = breeds[0]
             if top["probability"] > 0.7:
