@@ -20,6 +20,10 @@ def _get_current_step(collected: dict) -> str:
     if not collected.get("_photo_offer_done"):
         return "photo_offer"
 
+    # Goal — после фото, перед видом
+    if not collected.get("goal"):
+        return "goal"
+
     # Угадывание вида — ТОЛЬКО для явных животных кличек
     if not collected.get("species") and not collected.get("_species_guessed"):
         name = (collected.get("pet_name") or "").lower().strip()
@@ -40,12 +44,8 @@ def _get_current_step(collected: dict) -> str:
     if not collected.get("breed"):
         return "breed"
 
-    # Дата рождения / возраст
-    if (
-        not collected.get("birth_date")
-        and not collected.get("age_years")
-        and not collected.get("_age_skipped")
-    ):
+    # birth_date — спрашиваем ВСЕГДА, даже если age_years есть из фото
+    if not collected.get("birth_date") and not collected.get("_age_skipped"):
         return "birth_date"
 
     # Пол — пропускается для кошек (уже определён при выборе Кот/Кошка)
@@ -98,7 +98,13 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
             {"label": "Не угадал", "value": "Не угадал", "preferred": False},
         ]
 
-    # goal УБРАН из онбординга
+    if step == "goal":
+        return [
+            {"label": "Слежу за здоровьем", "value": "Слежу за здоровьем", "preferred": False},
+            {"label": "Прививки и плановое", "value": "Прививки и плановое", "preferred": False},
+            {"label": "Веду дневник", "value": "Веду дневник", "preferred": False},
+            {"label": "Кое-что беспокоит", "value": "Кое-что беспокоит", "preferred": False},
+        ]
 
     if step == "species":
         return [

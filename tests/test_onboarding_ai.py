@@ -116,8 +116,8 @@ def test_welcome_ping_returns_greeting():
 # ── Test 2: Backend generates quick_replies for goal step ────────────────────
 
 def test_quick_replies_format():
-    """After owner_name+pet_name+photo_offer_done, step=species → 3 QR buttons (Кот/Кошка/Собака)."""
-    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс", "_photo_offer_done": True, "_species_guessed": True},
+    """After all pre-species fields filled, step=species → 3 QR buttons (Кот/Кошка/Собака)."""
+    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс", "_photo_offer_done": True, "goal": "Слежу за здоровьем", "_species_guessed": True},
                 gemini_payload="ignored")
     assert len(resp["quick_replies"]) == 3
     assert resp["quick_replies"][0]["label"] == "Кот"
@@ -186,6 +186,7 @@ def test_complete_creates_pet():
         "birth_date": "2020-01-15",
         "gender": "male",
         "is_neutered": "Да",
+        "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
         "_passport_skipped": True,
         "_photo_offer_done": True,
@@ -212,6 +213,7 @@ def test_completion_auto_detected():
         "birth_date": "2021-06-01",
         "gender": "female",
         "is_neutered": "Да",
+        "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
         "_passport_skipped": True,
         "_photo_offer_done": True,
@@ -237,6 +239,7 @@ def test_pet_card_on_completion():
         "birth_date": "2022-03-01",
         "gender": "самец",
         "is_neutered": "Да",
+        "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
         "_passport_skipped": True,
         "_photo_offer_done": True,
@@ -416,7 +419,7 @@ def test_breed_reaction_calls_ai():
     # birth_date step with breed — the ONLY step that calls AI
     flags_with_breed = {
         "onboarding_collected": {
-            "owner_name": "Марк", "pet_name": "Бобик",
+            "owner_name": "Марк", "pet_name": "Бобик", "goal": "Слежу за здоровьем",
             "species": "dog", "_passport_skipped": True, "_photo_offer_done": True, "breed": "Хаски",
         }
     }

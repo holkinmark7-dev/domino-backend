@@ -131,9 +131,24 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
 
     # ─── photo_offer ───
     elif step == "photo_offer":
-        if any(w in low for w in ("пропуст", "нет фото", "не хочу", "потом", "скип", "нет")):
+        # Пропуск
+        if any(w in low for w in ("пропуст", "нет фото", "не хочу", "потом", "скип")):
             updates["_photo_offer_done"] = True
             return updates
+
+        # Кнопка камеры — фронт откроет камеру, не парсить
+        if raw in ("PHOTO_OFFER_CAMERA", "Сфотографировать"):
+            return updates
+
+        # Выбор породы из фото-списка (кнопка с названием породы)
+        if raw and len(raw) > 3 and raw not in ("Пропустить", "Сфотографировать", "PHOTO_OFFER_CAMERA"):
+            updates["breed"] = raw
+            updates["species"] = "dog"
+            updates["_photo_offer_done"] = True
+            if collected.get("_photo_color"):
+                updates["color"] = collected["_photo_color"]
+            return updates
+
         # Фото обрабатывается через breed_detection_data, не текстом
         updates["_photo_offer_refusals"] = collected.get("_photo_offer_refusals", 0) + 1
         return updates
