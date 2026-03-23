@@ -107,47 +107,96 @@ def handle_onboarding_ai(
         collected["_passport_skipped"] = True
         actual_message = "Не удалось прочитать паспорт. Заполним вручную."
 
-    # 2b. Breed detection
+    # 2b. Photo / Breed detection
     elif breed_detection_data and breed_detection_data.get("success"):
         breeds = breed_detection_data.get("breeds", [])
         color = breed_detection_data.get("color")
+        age_estimate = breed_detection_data.get("age_estimate")
+        confidence = breed_detection_data.get("confidence", 0)
+
+        # Записать данные в collected
+        collected["_photo_offer_done"] = True
+        if breeds:
+            collected["_photo_breeds"] = [
+                {"name_ru": b.get("name_ru", b) if isinstance(b, dict) else b,
+                 "name_lat": b.get("name_lat", "") if isinstance(b, dict) else "",
+                 "probability": b.get("probability", 0) if isinstance(b, dict) else 0}
+                for b in breeds[:3]
+            ]
+            collected["_photo_confidence"] = confidence
+        if color:
+            collected["_photo_color"] = color
+        if age_estimate:
+            collected["_photo_age_estimate"] = age_estimate
 
         if breeds:
-            top = breeds[0]
-            if top["probability"] > 0.7:
-                collected["breed"] = top["name_ru"]
+            top = breeds[0] if isinstance(breeds[0], dict) else {"name_ru": breeds[0], "probability": 0.5}
+            top_name = top.get("name_ru", str(top))
+            top_prob = top.get("probability", 0)
+
+            # Определить species из контекста (vision обычно определяет кошка/собака)
+            species_guess = "dog"  # дефолт — определится позже
+
+            if top_prob > 0.7:
+                # Уверен — одна порода, early return с photo_analysis
+                collected["breed"] = top_name
+                collected["species"] = species_guess
                 if color:
                     collected["color"] = color
-                actual_message = (
-                    f"По фото определил породу: {top['name_ru']} "
-                    f"({int(top['probability'] * 100)}% уверенность). "
-                    f"Окрас: {color or 'не определён'}."
-                )
-            else:
-                # Несколько вариантов — показываем пользователю, early return
-                ai_text = "Вижу несколько вариантов по фото."
-                breed_qr = [
-                    {
-                        "label": f"{b['name_ru']} ({int(b['probability'] * 100)}%)",
-                        "value": b["name_ru"],
-                        "preferred": i == 0,
-                    }
-                    for i, b in enumerate(breeds[:3])
-                ]
-                breed_qr.append({"label": "Другая порода", "value": "Другая порода", "preferred": False})
 
-                # Save state before early return
-                user_chat_id = _save_user_message(user_id, "Фото для определения породы")
+                user_chat_id = _save_user_message(user_id, "Фото питомца")
                 user_flags["onboarding_collected"] = collected
                 update_user_flags(user_id, user_flags)
+
+                ai_text = f"{top_name} — уже вижу."
                 _save_ai_message(user_id, ai_text, None, user_chat_id)
 
-                logger.warning("[ONB] === SENDING TO FRONT === qr_count=%d qr_labels=%s input_type=%s ai_text_len=%d phase=%s",
-                               len(breed_qr) if isinstance(breed_qr, list) else 0,
-                               [q["label"] for q in breed_qr][:5] if isinstance(breed_qr, list) else [],
-                               "text",
-                               len(ai_text) if ai_text else 0,
-                               "collecting")
+                logger.warning("[ONB] === PHOTO HIGH CONF === breed=%s conf=%.2f", top_name, top_prob)
+                return JSONResponse(content={
+                    "ai_response": ai_text,
+                    "quick_replies": [
+                        {"label": "Верно", "value": "__photo_confirm__", "preferred": True},
+                        {"label": "Исправить", "value": "__photo_reject__", "preferred": False},
+                    ],
+                    "onboarding_phase": "collecting",
+                    "pet_id": None,
+                    "pet_card": None,
+                    "input_type": "text",
+                    "placeholder": "Написать...",
+                    "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+                    "photo_analysis": {
+                        "breed": top_name,
+                        "breed_lat": top.get("name_lat", ""),
+                        "confidence": round(top_prob * 100),
+                        "color": color,
+                        "age_estimate": age_estimate,
+                        "species": species_guess,
+                    },
+                })
+            else:
+                # Не уверен — список пород
+                user_chat_id = _save_user_message(user_id, "Фото питомца")
+                user_flags["onboarding_collected"] = collected
+                update_user_flags(user_id, user_flags)
+
+                ai_text = "Похож на одну из пород — выбери правильную."
+                _save_ai_message(user_id, ai_text, None, user_chat_id)
+
+                breed_qr = [
+                    {"label": (b.get("name_ru") if isinstance(b, dict) else b),
+                     "value": (b.get("name_ru") if isinstance(b, dict) else b),
+                     "preferred": i == 0}
+                    for i, b in enumerate(breeds[:3])
+                ]
+                breed_qr.append({"label": "Другая порода", "value": "__photo_reject__", "preferred": False})
+
+                breed_options = [
+                    {"name": b.get("name_ru") if isinstance(b, dict) else b,
+                     "probability": round((b.get("probability", 0) if isinstance(b, dict) else 0) * 100)}
+                    for b in breeds[:3]
+                ]
+
+                logger.warning("[ONB] === PHOTO LOW CONF === breeds=%s", [b["name"] for b in breed_options])
                 return JSONResponse(content={
                     "ai_response": ai_text,
                     "quick_replies": breed_qr,
@@ -155,10 +204,18 @@ def handle_onboarding_ai(
                     "pet_id": None,
                     "pet_card": None,
                     "input_type": "text",
+                    "placeholder": "Написать...",
                     "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
+                    "photo_analysis": {
+                        "breeds": breed_options,
+                        "color": color,
+                        "age_estimate": age_estimate,
+                        "species": species_guess,
+                    },
                 })
         else:
-            actual_message = "Не удалось определить породу по фото."
+            actual_message = "Не удалось определить породу по фото. Заполним вручную."
+            collected["_photo_offer_done"] = True
 
     # 2c. Avatar URL from message text
     elif message_text and message_text.startswith("avatar_url:"):
@@ -291,10 +348,6 @@ def handle_onboarding_ai(
     # 11. Compute quick replies (once)
     quick_replies = _get_step_quick_replies(current_step, collected, client)
 
-    # 12. Compute step instruction
-    step_instruction = _get_step_instruction(current_step, collected)
-    original_step_instruction = step_instruction
-
     # --- Placeholder для поля ввода ---
     _STEP_PLACEHOLDERS = {
         "owner_name": "Твоё имя",
@@ -304,166 +357,66 @@ def handle_onboarding_ai(
     }
     placeholder = _STEP_PLACEHOLDERS.get(current_step, "Написать...")
 
-    # --- Определяем режим ---
-    # [QUESTION] = AI пишет реакцию, вопрос из кода
-    # "Скажи РОВНО" = точный текст, без AI свободы
-    # Остальное = AI пишет всё (ЦЕЛЬ)
-    question = None
-    reaction_instruction = ""
-    if "[QUESTION]" in step_instruction:
-        parts = step_instruction.split("[QUESTION]")
-        reaction_instruction = parts[0].strip()
-        question = parts[1].strip()
-        step_instruction = reaction_instruction  # AI получит только реакцию
+    # 12. Готовые тексты (без AI)
+    from routers.onboarding_texts import get_step_text
 
-    is_exact = step_instruction.startswith("Скажи РОВНО")
+    scripted_text = get_step_text(current_step, collected)
 
-    # 13. Build system prompt
-    system_prompt = _build_system_prompt(
-        collected, step_instruction, current_step, quick_replies, question=question
-    )
+    if scripted_text is not None:
+        # Текст из кода — не вызываем AI
+        ai_text = scripted_text
+        logger.warning("[ONB] === SCRIPTED === step=%s text='%s'", current_step, ai_text[:80])
+    else:
+        # birth_date — единственный шаг где нужен AI (реакция на породу)
+        breed = collected.get("breed", "")
+        pet = collected.get("pet_name", "")
+        birth_question = f"Когда родился {pet}?"
 
-    # 14. Call Claude Haiku
-    def _fix_anthropic_messages(messages):
-        """Anthropic requires alternating user/assistant roles."""
-        if not messages:
-            return [{"role": "user", "content": "Начни онбординг"}]
-        fixed = []
-        for msg in messages:
-            if fixed and fixed[-1]["role"] == msg["role"]:
-                fixed[-1]["content"] += "\n" + msg["content"]
-            else:
-                fixed.append(msg)
-        if fixed and fixed[0]["role"] == "assistant":
-            fixed.insert(0, {"role": "user", "content": "..."})
-        return fixed
-
-    # Few-shot: эталонный диалог Dominik — AI копирует стиль
-    _FEW_SHOT_MESSAGES = [
-        {"role": "user", "content": "Ну Марк"},
-        {"role": "assistant", "content": "Марк, расскажи — кто у тебя?"},
-        {"role": "user", "content": "У меня собака, подобрал на улице"},
-        {"role": "assistant", "content": "Подобрал — значит друг другу повезло. Как зовут?"},
-        {"role": "user", "content": "Бобик"},
-        {"role": "assistant", "content": "Бобик — с таким точно не заскучаешь. Зачем пришёл — что-то беспокоит или просто на контроль?"},
-        {"role": "user", "content": "Овчарка"},
-        {"role": "assistant", "content": "Овчарок много — немецкая, кавказская? Уточни."},
-        {"role": "user", "content": "Кавказская"},
-        {"role": "assistant", "content": "Кавказец — серьёзный зверь, уважаю. Когда родился Бобик?"},
-        {"role": "user", "content": "Примерно 5 лет"},
-        {"role": "assistant", "content": "Пять лет — самый расцвет. Мальчик или девочка?"},
-    ]
-
-    try:
-        ant_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-
-        if is_exact:
-            # Точный текст — без истории, temp 0
-            ant_messages = [
-                {"role": "user", "content": actual_message or "Начни онбординг"},
-            ]
-            resp = ant_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=150,
-                system=system_prompt,
-                messages=ant_messages,
-                temperature=0.0,
-            )
-            ai_text = resp.content[0].text.strip()
-
-        elif question and not reaction_instruction:
-            # Только вопрос, без реакции (species, passport, is_neutered, avatar)
-            ai_text = question
-
-        elif question and reaction_instruction:
-            # Реакция от AI + вопрос из кода (goal, breed, birth_date, gender)
-            history_rows = _load_chat_history(user_id, limit=10)
-            ant_messages = []
-            ant_messages.extend(_FEW_SHOT_MESSAGES)
-            for row in history_rows:
-                role = "assistant" if row["role"] == "ai" else "user"
-                content = row.get("message") or ""
-                if content:
-                    ant_messages.append({"role": role, "content": content})
-            ant_messages.append({"role": "user", "content": actual_message or "Продолжай"})
-            ant_messages = _fix_anthropic_messages(ant_messages)
-
-            resp = ant_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=80,
-                system=system_prompt,
-                messages=ant_messages,
-                temperature=0.5,
-            )
-            reaction = resp.content[0].text.strip()
-            reaction = _remove_stop_phrases(reaction)
-
-            # Убираем вопросы из реакции — AI мог добавить
-            if "?" in reaction:
-                reaction = reaction.split("?")[0].rstrip() + "."
-
-            ai_text = f"{reaction}\n\n{question}"
-
+        if breed and breed != "Метис":
+            try:
+                ant_client = anthropic.Anthropic(
+                    api_key=os.environ.get("ANTHROPIC_API_KEY", "")
+                )
+                resp = ant_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=25,
+                    system=(
+                        "Ты Dominik — ветеринарный друг. "
+                        "Напиши ОДНУ фразу про породу, 3-7 слов. С характером. Без вопросов. "
+                        "Примеры: 'Кавказец — серьёзный зверь, уважаю.', "
+                        "'Хаски — энергии на десятерых.', "
+                        "'Чихуахуа — мелкие, но характер не по размеру.'"
+                    ),
+                    messages=[{"role": "user", "content": f"Порода: {breed}"}],
+                    temperature=0.7,
+                )
+                reaction = resp.content[0].text.strip()
+                reaction = _remove_stop_phrases(reaction)
+                # Убрать вопросы если AI добавил
+                if "?" in reaction:
+                    reaction = reaction.split("?")[0].rstrip()
+                    if reaction and reaction[-1] not in ".!":
+                        reaction += "."
+                ai_text = f"{reaction}\n\n{birth_question}"
+                logger.warning("[ONB] === BREED REACTION === breed=%s reaction='%s'",
+                             breed, reaction)
+            except Exception as e:
+                logger.error("[ONB] breed reaction failed: %s", e)
+                ai_text = birth_question
         else:
-            # Полная свобода (pet_name, owner_name переспрос)
-            history_rows = _load_chat_history(user_id, limit=20)
-            ant_messages = []
-            ant_messages.extend(_FEW_SHOT_MESSAGES)
-            for row in history_rows:
-                role = "assistant" if row["role"] == "ai" else "user"
-                content = row.get("message") or ""
-                if content:
-                    ant_messages.append({"role": role, "content": content})
-            ant_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
-            ant_messages = _fix_anthropic_messages(ant_messages)
-
-            resp = ant_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=150,
-                system=system_prompt,
-                messages=ant_messages,
-                temperature=0.5,
-            )
-            ai_text = resp.content[0].text.strip()
-
-        # Пост-обработка (кроме reaction+question — уже обработано)
-        if not (question and reaction_instruction):
-            ai_text = _remove_stop_phrases(ai_text)
-
-        logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
-
-    except Exception as e:
-        logger.error("[haiku_call] %s", e)
-        ai_text = ""
-
-    # Уровень 3: keyword check — пропускается для ЦЕЛЬ и [QUESTION]
-    if not step_instruction.startswith("ЦЕЛЬ:") and "[QUESTION]" not in original_step_instruction:
-        _STEP_KEYWORDS = {
-            "owner_name": ["зовут", "имя", "тебя"],
-            "pet_name": ["зовут", "питом", "кличк"],
-            "species_guess_dog": ["собак", "пёс", "пес", "угадал"],
-            "species_guess_cat": ["кот", "угадал"],
-            "species": ["кошк", "собак", "кот"],
-            "passport_offer": ["паспорт", "сфотограф", "перенес"],
-            "breed": ["поро", "какая", "уточн", "фото", "пиши", "загруз"],
-            "birth_date": ["родил", "когда", "дат", "возраст", "сколько"],
-            "gender": ["мальчик", "девочк", "пол"],
-            "is_neutered": ["кастр", "стерил"],
-            "avatar": ["фото", "профил", "последн", "штрих", "мордаш"],
-        }
-
-        keywords = _STEP_KEYWORDS.get(current_step, [])
-        if keywords and ai_text:
-            text_lower = ai_text.lower()
-            has_keyword = any(kw in text_lower for kw in keywords)
-            if not has_keyword:
-                logger.warning("[ONB] AI text FAILED keyword check for step=%s, replacing with fallback. AI said: '%s'",
-                              current_step, ai_text[:80])
-                ai_text = _get_fallback_text(current_step, collected)
+            ai_text = birth_question
 
     # 15. Fallback if empty response
     if not ai_text:
         ai_text = _get_fallback_text(current_step, collected)
+
+    # 15a. Fallback имя/кличка при 3+ отказах
+    if current_step == "owner_name" and collected.get("_owner_name_refusals", 0) >= 3:
+        if not collected.get("owner_name"):
+            collected["owner_name"] = "Друг"
+    if current_step == "pet_name" and collected.get("_pet_name_refusals", 0) >= 3:
+        if not collected.get("pet_name"):
+            collected["pet_name"] = "Питомец"
 
     # 15b. Set _age_reacted after gender step uses age reaction
     if current_step == "gender" and collected.get("age_years") is not None:

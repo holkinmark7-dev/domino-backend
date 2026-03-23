@@ -129,6 +129,38 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             updates["_input_hint"] = ai_result.get("hint", "Мне нужна кличка чтобы вести карточку питомца. Как зовут?")
         return updates
 
+    # ─── photo_offer ───
+    elif step == "photo_offer":
+        if any(w in low for w in ("пропуст", "нет фото", "не хочу", "потом", "скип", "нет")):
+            updates["_photo_offer_done"] = True
+            return updates
+        # Фото обрабатывается через breed_detection_data, не текстом
+        updates["_photo_offer_refusals"] = collected.get("_photo_offer_refusals", 0) + 1
+        return updates
+
+    # ─── photo confirm/reject (после анализа фото) ───
+    elif raw == "__photo_confirm__":
+        updates["_photo_offer_done"] = True
+        photo_breeds = collected.get("_photo_breeds", [])
+        if photo_breeds:
+            updates["breed"] = photo_breeds[0].get("name_ru", photo_breeds[0]) if isinstance(photo_breeds[0], dict) else photo_breeds[0]
+        color = collected.get("_photo_color")
+        if color:
+            updates["color"] = color
+        age_est = collected.get("_photo_age_estimate")
+        if age_est:
+            # Парсить "~3 года" → age_years
+            import re as _re
+            m = _re.search(r'(\d+)', str(age_est))
+            if m:
+                updates["age_years"] = int(m.group(1))
+        # species уже записан при обработке фото
+        return updates
+
+    elif raw == "__photo_reject__":
+        updates["_photo_offer_done"] = True
+        return updates
+
     # ─── species_guess_dog ───
     elif step == "species_guess_dog":
         if any(w in clean for w in ["да", "пёс", "пес", "собака", "угадал"]):

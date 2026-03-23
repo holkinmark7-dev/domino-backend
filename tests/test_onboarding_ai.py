@@ -106,8 +106,9 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
 # ── Test 1: Welcome ping returns greeting ────────────────────────────────────
 
 def test_welcome_ping_returns_greeting():
-    resp = _run("", gemini_payload="Привет. Я Dominik — рад что ты здесь. Как тебя зовут?")
-    assert resp["ai_response"] == "Привет. Я Dominik — рад что ты здесь. Как тебя зовут?"
+    resp = _run("", gemini_payload="ignored — scripted text used now")
+    assert "Dominik" in resp["ai_response"]
+    assert "зовут" in resp["ai_response"]
     assert resp["onboarding_phase"] == "collecting"
     assert resp["pet_id"] is None
 
@@ -115,11 +116,11 @@ def test_welcome_ping_returns_greeting():
 # ── Test 2: Backend generates quick_replies for goal step ────────────────────
 
 def test_quick_replies_format():
-    """After owner_name+pet_name+species filled, step=goal → 4 backend-generated QR buttons."""
-    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс", "_species_guessed": True},
-                gemini_payload="Рексу повезло. Чем могу помочь?")
-    assert len(resp["quick_replies"]) == 4
-    assert resp["quick_replies"][0]["label"] == "Слежу за здоровьем"
+    """After owner_name+pet_name+photo_offer_done, step=species → 3 QR buttons (Кот/Кошка/Собака)."""
+    resp = _run("", collected={"owner_name": "Марк", "pet_name": "Рекс", "_photo_offer_done": True, "_species_guessed": True},
+                gemini_payload="ignored")
+    assert len(resp["quick_replies"]) == 3
+    assert resp["quick_replies"][0]["label"] == "Кот"
     assert "value" in resp["quick_replies"][0]
     assert "preferred" in resp["quick_replies"][0]
 
@@ -185,9 +186,9 @@ def test_complete_creates_pet():
         "birth_date": "2020-01-15",
         "gender": "male",
         "is_neutered": "Да",
-        "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
         "_passport_skipped": True,
+        "_photo_offer_done": True,
     }
     resp = _run("Нет, не кастрирован", collected=full_collected, gemini_payload={
         "text": "Карточка Рекса готова.",
@@ -211,9 +212,9 @@ def test_completion_auto_detected():
         "birth_date": "2021-06-01",
         "gender": "female",
         "is_neutered": "Да",
-        "goal": "Прививки и плановое",
         "_avatar_skipped": True,
         "_passport_skipped": True,
+        "_photo_offer_done": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Мурка стерилизована.",
@@ -236,9 +237,9 @@ def test_pet_card_on_completion():
         "birth_date": "2022-03-01",
         "gender": "самец",
         "is_neutered": "Да",
-        "goal": "Слежу за здоровьем",
         "_avatar_skipped": True,
         "_passport_skipped": True,
+        "_photo_offer_done": True,
     }
     resp = _run("Да", collected=full, gemini_payload={
         "text": "Карточка готова.",
@@ -407,28 +408,24 @@ def test_non_json_gemini_response():
 
 # ── Test 12: Chat history loaded for Gemini context ──────────────────────────
 
-def test_chat_history_used_as_context():
-    """Chat history is passed to Anthropic as messages context (reaction+question steps)."""
+def test_breed_reaction_calls_ai():
+    """birth_date step with breed calls AI for breed reaction."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
 
-    # pet_name step uses reaction+question — AI gets history for reaction
-    flags_with_pet_name = {
+    # birth_date step with breed — the ONLY step that calls AI
+    flags_with_breed = {
         "onboarding_collected": {
-            "owner_name": "Марк",
+            "owner_name": "Марк", "pet_name": "Бобик",
+            "species": "dog", "_passport_skipped": True, "_photo_offer_done": True, "breed": "Хаски",
         }
     }
-
-    history_rows = [
-        {"role": "ai", "message": "Привет. Как тебя зовут?"},
-        {"role": "user", "message": "Марк"},
-    ]
 
     captured_kwargs = {}
 
     def capture_create(**kwargs):
         captured_kwargs.update(kwargs)
-        return _anthropic_response("Марк — будем знакомы.")
+        return _anthropic_response("Хаски — энергии на десятерых.")
 
     mock_gemini_client = MagicMock()
     mock_oai_client = MagicMock()
@@ -438,9 +435,9 @@ def test_chat_history_used_as_context():
     mock_ant_client.messages.create.side_effect = capture_create
 
     with (
-        _patch(_PATCH_FLAGS, return_value=flags_with_pet_name),
+        _patch(_PATCH_FLAGS, return_value=flags_with_breed),
         _patch(_PATCH_UPDATE),
-        _patch(_PATCH_HISTORY, return_value=history_rows),
+        _patch(_PATCH_HISTORY, return_value=[]),
         _patch(_PATCH_SAVE_USER, return_value=None),
         _patch(_PATCH_SAVE_AI),
         _patch(_PATCH_CREATE_PET, return_value=None),
@@ -451,12 +448,11 @@ def test_chat_history_used_as_context():
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
         mock_anthropic_mod.Anthropic.return_value = mock_ant_client
-        handle_onboarding_ai("user-1", "")
+        resp = handle_onboarding_ai("user-1", "")
 
-    # Anthropic: system is separate kwarg, messages = history + user
-    assert "system" in captured_kwargs, "system prompt not passed to Anthropic"
-    msgs = captured_kwargs.get("messages", [])
-    # After _fix_anthropic_messages: should have alternating roles
-    roles = [m["role"] for m in msgs]
-    for i in range(1, len(roles)):
-        assert roles[i] != roles[i-1], f"Consecutive same roles: {roles}"
+    import json as _json
+    body = _json.loads(resp.body)
+    # AI was called for breed reaction
+    assert "system" in captured_kwargs, "AI not called for breed reaction"
+    # Response contains both reaction and birth question
+    assert "Когда родился Бобик" in body["ai_response"]

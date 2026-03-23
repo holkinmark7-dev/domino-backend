@@ -16,6 +16,10 @@ def _get_current_step(collected: dict) -> str:
     if not collected.get("pet_name"):
         return "pet_name"
 
+    # Photo offer — после клички, перед видом
+    if not collected.get("_photo_offer_done"):
+        return "photo_offer"
+
     # Угадывание вида — ТОЛЬКО для явных животных кличек
     if not collected.get("species") and not collected.get("_species_guessed"):
         name = (collected.get("pet_name") or "").lower().strip()
@@ -23,18 +27,12 @@ def _get_current_step(collected: dict) -> str:
             return "species_guess_dog"
         if name in _CAT_NAMES:
             return "species_guess_cat"
-        # Человеческие / нейтральные клички — НЕ угадываем, идём к goal
-
-    if not collected.get("goal"):
-        return "goal"
-
-    # concern УБРАН — тревога обрабатывается в финале
 
     # Вид — если не определён через угадывание
     if not collected.get("species"):
         return "species"
 
-    # Паспорт — между species и breed
+    # Паспорт — между species и breed (пропускается если фото заполнило breed)
     if not collected.get("_passport_skipped") and not collected.get("breed"):
         return "passport_offer"
 
@@ -74,6 +72,12 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
     if step == "pet_name":
         return []
 
+    if step == "photo_offer":
+        return [
+            {"label": "Сфотографировать", "value": "PHOTO_OFFER_CAMERA", "preferred": True},
+            {"label": "Пропустить", "value": "Пропустить", "preferred": False},
+        ]
+
     if step == "species_guess_dog":
         return [
             {"label": "Да, пёс", "value": "Да, пёс", "preferred": True},
@@ -94,15 +98,7 @@ def _get_step_quick_replies(step: str, collected: dict, client=None) -> list:
             {"label": "Не угадал", "value": "Не угадал", "preferred": False},
         ]
 
-    if step == "goal":
-        return [
-            {"label": "Слежу за здоровьем", "value": "Слежу за здоровьем", "preferred": False},
-            {"label": "Прививки и плановое", "value": "Прививки и плановое", "preferred": False},
-            {"label": "Веду дневник", "value": "Веду дневник", "preferred": False},
-            {"label": "Кое-что беспокоит", "value": "Кое-что беспокоит", "preferred": False},
-        ]
-
-    # concern УБРАН
+    # goal УБРАН из онбординга
 
     if step == "species":
         return [
