@@ -7,6 +7,7 @@ import os
 import logging
 
 import openai
+import anthropic
 from google import genai
 from google.genai import types
 from fastapi.responses import JSONResponse
@@ -303,86 +304,63 @@ def handle_onboarding_ai(
     # "ЦЕЛЬ:" = AI думает сам, с историей, temp 0.3
     is_exact = step_instruction.startswith("Скажи РОВНО")
 
-    # 14. Call OpenAI GPT-4o
+    # 14. Call Claude Haiku
+    def _fix_anthropic_messages(messages):
+        """Anthropic requires alternating user/assistant roles."""
+        if not messages:
+            return [{"role": "user", "content": "Начни онбординг"}]
+        fixed = []
+        for msg in messages:
+            if fixed and fixed[-1]["role"] == msg["role"]:
+                fixed[-1]["content"] += "\n" + msg["content"]
+            else:
+                fixed.append(msg)
+        if fixed and fixed[0]["role"] == "assistant":
+            fixed.insert(0, {"role": "user", "content": "..."})
+        return fixed
+
     try:
-        oai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        ant_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
         if is_exact:
-            oai_messages = [
-                {"role": "system", "content": system_prompt},
+            ant_messages = [
                 {"role": "user", "content": actual_message or "Начни онбординг"},
             ]
-            response = oai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=oai_messages,
+            resp = ant_client.messages.create(
+                model="claude-haiku-4-5-20251001",
                 max_tokens=150,
+                system=system_prompt,
+                messages=ant_messages,
                 temperature=0.0,
             )
-            ai_text = (response.choices[0].message.content or "").strip()
+            ai_text = resp.content[0].text.strip()
 
         else:
-            # Creative: structured chain of thought
             history_rows = _load_chat_history(user_id, limit=20)
-            oai_messages = [{"role": "system", "content": system_prompt}]
+            ant_messages = []
             for row in history_rows:
                 role = "assistant" if row["role"] == "ai" else "user"
                 content = row.get("message") or ""
                 if content:
-                    oai_messages.append({"role": role, "content": content})
+                    ant_messages.append({"role": role, "content": content})
+            ant_messages.append({"role": "user", "content": actual_message or "Начни онбординг"})
+            ant_messages = _fix_anthropic_messages(ant_messages)
 
-            # Добавить инструкцию structured output
-            thinking_instruction = (
-                "\n\nФОРМАТ ОТВЕТА: верни ТОЛЬКО валидный JSON:\n"
-                '{"thinking": "...", "response": "..."}\n\n'
-                "В thinking ОБЯЗАТЕЛЬНО ответь себе:\n"
-                "1. Что сказал и что имел в виду?\n"
-                "2. Какое настроение — как подстроиться?\n"
-                "3. Как бы это сказал друг, а НЕ бот?\n"
-                "4. Что я уже говорил — не повторяться\n"
-                "5. Пол питомца (если известен) — он или она?\n"
-                "6. Моя цель — один вопрос, ничего лишнего\n\n"
-                "В response:\n"
-                "- Самостоятельный текст с заглавной буквы\n"
-                "- Не копируй примеры из промпта буквально\n"
-                "- Не благодари, не подтверждай данные\n"
-                "- Строго 1-2 предложения\n\n"
-                "Пользователь увидит ТОЛЬКО response.\n"
-                "ОТВЕТ — ТОЛЬКО JSON, без ```json, без пояснений."
-            )
-
-            oai_messages.append({
-                "role": "user",
-                "content": (actual_message or "Начни онбординг") + thinking_instruction,
-            })
-
-            response = oai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=oai_messages,
-                max_tokens=300,
+            resp = ant_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=150,
+                system=system_prompt,
+                messages=ant_messages,
                 temperature=0.5,
             )
-            raw_response = (response.choices[0].message.content or "").strip()
-
-            # Парсинг JSON
-            try:
-                raw_response = raw_response.replace("```json", "").replace("```", "").strip()
-                parsed = json.loads(raw_response)
-                ai_text = parsed.get("response", "").strip()
-                if ai_text and ai_text[0].islower():
-                    ai_text = ai_text[0].upper() + ai_text[1:]
-                thinking = parsed.get("thinking", "")
-                if thinking:
-                    logger.info("[ONB] THINKING: %s", thinking[:200])
-            except (json.JSONDecodeError, AttributeError):
-                logger.warning("[ONB] Failed to parse structured output, using raw: %s", raw_response[:100])
-                ai_text = raw_response
+            ai_text = resp.content[0].text.strip()
 
         ai_text = _remove_stop_phrases(ai_text)
 
         logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
 
     except Exception as e:
-        logger.error("[oai_call] %s", e)
+        logger.error("[haiku_call] %s", e)
         ai_text = ""
 
     # Уровень 3: проверка ответа AI — содержит ли ключевые элементы шага?

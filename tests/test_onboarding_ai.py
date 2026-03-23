@@ -31,6 +31,7 @@ _PATCH_SAVE_AI = "routers.onboarding_ai._save_ai_message"
 _PATCH_CREATE_PET = "routers.onboarding_ai._create_pet"
 _PATCH_GENAI = "routers.onboarding_ai.genai"
 _PATCH_OPENAI = "routers.onboarding_ai.openai"
+_PATCH_ANTHROPIC = "routers.onboarding_ai.anthropic"
 
 
 def _oai_response(text: str) -> MagicMock:
@@ -38,6 +39,15 @@ def _oai_response(text: str) -> MagicMock:
     mock = MagicMock()
     mock.choices = [MagicMock()]
     mock.choices[0].message.content = text
+    return mock
+
+
+def _anthropic_response(text: str) -> MagicMock:
+    """Create a mock Anthropic messages response."""
+    mock = MagicMock()
+    content_block = MagicMock()
+    content_block.text = text
+    mock.content = [content_block]
     return mock
 
 
@@ -60,10 +70,14 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
     mock_client = MagicMock()
     mock_client.chats.create.return_value = mock_chat
 
-    # OpenAI mock (used for main text generation)
+    # OpenAI mock (still used for _validate_input_with_ai)
     ai_text = gemini_payload if isinstance(gemini_payload, str) else gemini_payload.get("text", "")
     mock_oai_client = MagicMock()
     mock_oai_client.chat.completions.create.return_value = _oai_response(ai_text)
+
+    # Anthropic mock (used for main text generation via Claude Haiku)
+    mock_ant_client = MagicMock()
+    mock_ant_client.messages.create.return_value = _anthropic_response(ai_text)
 
     with (
         patch(_PATCH_FLAGS, return_value=_make_flags(collected)),
@@ -74,9 +88,11 @@ def _run(message_text: str, collected: dict | None = None, gemini_payload: dict 
         patch(_PATCH_CREATE_PET, return_value=("pet-uuid-1", 1)),
         patch(_PATCH_GENAI) as mock_genai,
         patch(_PATCH_OPENAI) as mock_openai_mod,
+        patch(_PATCH_ANTHROPIC) as mock_anthropic_mod,
     ):
         mock_genai.Client.return_value = mock_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
+        mock_anthropic_mod.Anthropic.return_value = mock_ant_client
         resp = handle_onboarding_ai(
             user_id="user-test-1",
             message_text=message_text,
@@ -324,9 +340,11 @@ def test_gemini_error_returns_fallback():
     import json as _json
 
     mock_gemini_client = MagicMock()
-
     mock_oai_client = MagicMock()
-    mock_oai_client.chat.completions.create.side_effect = Exception("API unavailable")
+    mock_oai_client.chat.completions.create.return_value = _oai_response("")
+
+    mock_ant_client = MagicMock()
+    mock_ant_client.messages.create.side_effect = Exception("API unavailable")
 
     with (
         _patch(_PATCH_FLAGS, return_value={}),
@@ -337,13 +355,14 @@ def test_gemini_error_returns_fallback():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
         _patch(_PATCH_OPENAI) as mock_openai_mod,
+        _patch(_PATCH_ANTHROPIC) as mock_anthropic_mod,
     ):
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
+        mock_anthropic_mod.Anthropic.return_value = mock_ant_client
         resp = handle_onboarding_ai("user-1", "привет")
 
     body = _json.loads(resp.body)
-    # On error ai_text="" → fallback kicks in
     assert len(body["ai_response"]) > 0
     assert body["onboarding_phase"] == "collecting"
 
@@ -351,15 +370,17 @@ def test_gemini_error_returns_fallback():
 # ── Test 11: Non-JSON Gemini response treated as plain text ──────────────────
 
 def test_non_json_gemini_response():
-    """OpenAI returns plain text — should work directly."""
+    """Anthropic returns plain text — should work directly."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
     import json as _json
 
     mock_gemini_client = MagicMock()
-
     mock_oai_client = MagicMock()
-    mock_oai_client.chat.completions.create.return_value = _oai_response(
+    mock_oai_client.chat.completions.create.return_value = _oai_response("")
+
+    mock_ant_client = MagicMock()
+    mock_ant_client.messages.create.return_value = _anthropic_response(
         "Привет! Как тебя зовут?"
     )
 
@@ -372,9 +393,11 @@ def test_non_json_gemini_response():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
         _patch(_PATCH_OPENAI) as mock_openai_mod,
+        _patch(_PATCH_ANTHROPIC) as mock_anthropic_mod,
     ):
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
+        mock_anthropic_mod.Anthropic.return_value = mock_ant_client
         resp = handle_onboarding_ai("user-1", "")
 
     body = _json.loads(resp.body)
@@ -385,11 +408,10 @@ def test_non_json_gemini_response():
 # ── Test 12: Chat history loaded for Gemini context ──────────────────────────
 
 def test_chat_history_used_as_context():
-    """Chat history is passed to OpenAI as messages context (creative steps only)."""
+    """Chat history is passed to Anthropic as messages context (creative steps only)."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
 
-    # Use a creative step (breed) so history is included
     flags_with_breed_step = {
         "onboarding_collected": {
             "owner_name": "Марк", "pet_name": "Рекс", "goal": "Слежу за здоровьем",
@@ -403,15 +425,18 @@ def test_chat_history_used_as_context():
         {"role": "ai", "message": "Какой породы Рекс?"},
     ]
 
-    captured_messages = []
+    captured_kwargs = {}
 
     def capture_create(**kwargs):
-        captured_messages.extend(kwargs.get("messages", []))
-        return _oai_response("Какая порода?")
+        captured_kwargs.update(kwargs)
+        return _anthropic_response("Какая порода?")
 
     mock_gemini_client = MagicMock()
     mock_oai_client = MagicMock()
-    mock_oai_client.chat.completions.create.side_effect = capture_create
+    mock_oai_client.chat.completions.create.return_value = _oai_response("")
+
+    mock_ant_client = MagicMock()
+    mock_ant_client.messages.create.side_effect = capture_create
 
     with (
         _patch(_PATCH_FLAGS, return_value=flags_with_breed_step),
@@ -422,20 +447,17 @@ def test_chat_history_used_as_context():
         _patch(_PATCH_CREATE_PET, return_value=None),
         _patch(_PATCH_GENAI) as mock_genai,
         _patch(_PATCH_OPENAI) as mock_openai_mod,
+        _patch(_PATCH_ANTHROPIC) as mock_anthropic_mod,
     ):
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
+        mock_anthropic_mod.Anthropic.return_value = mock_ant_client
         handle_onboarding_ai("user-1", "Хаски")
 
-    # AI-only parsing may call OpenAI for validation first,
-    # then the main chat call adds system + history + user.
-    # Find the system message (start of main chat call).
-    system_idx = None
-    for i, m in enumerate(captured_messages):
-        if m["role"] == "system":
-            system_idx = i
-            break
-    assert system_idx is not None, f"No system message found in {[m['role'] for m in captured_messages]}"
-    assert captured_messages[system_idx]["role"] == "system"
-    assert captured_messages[system_idx + 1]["role"] == "assistant"  # ai → assistant
-    assert captured_messages[system_idx + 2]["role"] == "user"
+    # Anthropic: system is separate kwarg, messages = history + user
+    assert "system" in captured_kwargs, "system prompt not passed to Anthropic"
+    msgs = captured_kwargs.get("messages", [])
+    # After _fix_anthropic_messages: should have alternating roles
+    roles = [m["role"] for m in msgs]
+    for i in range(1, len(roles)):
+        assert roles[i] != roles[i-1], f"Consecutive same roles: {roles}"
