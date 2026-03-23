@@ -146,7 +146,7 @@ def _get_step_instruction(step: str, collected: dict) -> str:
     # ─── is_neutered ───
     if step == "is_neutered":
         gender_val = collected.get("gender", "")
-        word = "стерилизована" if gender_val == "самка" else "кастрирован"
+        word = "стерилизована" if gender_val == "female" else "кастрирован"
         return (
             f"[QUESTION]{pet} {word}? Влияет на питание и режим."
         )
