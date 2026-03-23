@@ -53,7 +53,7 @@ def get_step_text(step: str, collected: dict) -> str:
     # ═══════════════════════════════════
     if step == "pet_name":
         if refusals_pet == 0:
-            return f"{owner}, давай знакомиться — как зовут твоего зверя?"
+            return f"{owner}, давай знакомиться с твоим питомцем — как его зовут?"
         if refusals_pet == 1:
             return "Напиши кличку питомца — кошки или собаки."
         if refusals_pet == 2:
