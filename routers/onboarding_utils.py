@@ -385,6 +385,7 @@ def _build_system_prompt(
     step_instruction: str,
     current_step: str = "",
     quick_replies: list = None,
+    question: str = None,
 ) -> str:
 
     # --- Заполненные поля ---
@@ -406,68 +407,63 @@ def _build_system_prompt(
             known_lines.append(f"  {label}: {val}")
     known_block = "\n".join(known_lines) if known_lines else "  пока ничего"
 
-    # --- Тон по goal ---
-    goal = collected.get("goal", "")
-    tone_map = {
-        "Есть тревога": "ТОНАЛЬНОСТЬ: спокойный, без давления, врач-друг.",
-        "Слежу за здоровьем": "ТОНАЛЬНОСТЬ: профилактический, деловой.",
-        "Прививки и плановое": "ТОНАЛЬНОСТЬ: чёткий, конкретный.",
-        "Веду дневник": "ТОНАЛЬНОСТЬ: тёплый, без срочности.",
-    }
-    tone = tone_map.get(goal, "")
-
-    # --- Контекст ---
-    ctx = []
-    if tone:
-        ctx.append(tone)
-    if collected.get("_concern_heard"):
-        ctx.append("Пользователь рассказал о тревоге — в финале вернись к ней.")
-    ctx_block = ("\n" + "\n".join(ctx) + "\n") if ctx else ""
-
-    # --- Кнопки ---
-    if quick_replies:
-        labels = ", ".join(qr["label"] for qr in quick_replies)
-        btn = (
-            f"\nПод твоим сообщением будут кнопки: {labels}."
-            f"\nЗАПРЕЩЕНО копировать названия кнопок в текст."
-            f"\nЗАПРЕЩЕНО перечислять варианты в скобках, через слэш или через 'или'."
-        )
-    else:
-        btn = "\nКнопок нет — пользователь ответит текстом."
-
     # --- Склонения ---
     pet_name = collected.get("pet_name", "")
     if pet_name and pet_name != "Питомец":
         decl = (
-            f"\nГОТОВЫЕ СКЛОНЕНИЯ (используй только их, НЕ придумывай свои):\n"
+            f"\n<declensions>\n"
             f"  {pet_name} -> кого? {_decline_pet_name(pet_name, 'gen')}"
             f" / кому? {_decline_pet_name(pet_name, 'dat')}"
             f" / кем? {_decline_pet_name(pet_name, 'inst')}"
             f" / о ком? {_decline_pet_name(pet_name, 'prep')}\n"
+            f"</declensions>\n"
         )
     else:
         decl = ""
 
-    # --- Hint если пользователь ввёл мусор ---
+    # --- Hint ---
     hint = collected.get("_input_hint", "")
-    if hint and step_instruction.startswith("ЦЕЛЬ:"):
-        hint_block = "\nПользователь ответил не по теме. Переспроси по-другому — у тебя есть цель.\n"
+    if hint and "ЦЕЛЬ:" in step_instruction:
+        hint_block = "\n<hint>Пользователь ответил не по теме. Переспроси по-другому.</hint>\n"
     elif hint:
-        hint_block = f"\nПОЛЬЗОВАТЕЛЬ НАПИСАЛ НЕ ТО. Мягко направь: {hint}\n"
+        hint_block = f"\n<hint>Пользователь написал не то. Мягко направь: {hint}</hint>\n"
     else:
         hint_block = ""
+
+    # --- Кнопки ---
+    if quick_replies:
+        labels = ", ".join(qr["label"] for qr in quick_replies)
+        btn = f"\n<buttons>Кнопки под сообщением: {labels}. НЕ копируй названия кнопок в текст.</buttons>\n"
+    else:
+        btn = ""
+
+    # --- Задача ---
+    if question:
+        # Простой шаг: AI пишет только реакцию, вопрос добавит код
+        task_block = (
+            f"\n<task>\n"
+            f"Напиши ТОЛЬКО реакцию на ответ пользователя. ОДНО предложение.\n"
+            f"Вопрос задавать НЕ НУЖНО — он будет добавлен автоматически.\n"
+            f"НЕ ЗАДАВАЙ ВОПРОСОВ. Только реакция.\n"
+            f"{step_instruction}\n"
+            f"</task>\n"
+        )
+    else:
+        # Сложный шаг: AI пишет полный ответ
+        task_block = (
+            f"\n<task>\n"
+            f"{step_instruction}\n"
+            f"</task>\n"
+        )
 
     # --- Сборка ---
     return (
         f"{_CHARACTER_TEXT.strip()}\n"
-        f"\n---\n"
-        f"\nУЖЕ ИЗВЕСТНО:\n{known_block}\n"
-        f"{ctx_block}"
+        f"\n<known_data>\n{known_block}\n</known_data>\n"
         f"{decl}"
         f"{hint_block}"
-        f"\n"
-        f"\nТВОЯ ЗАДАЧА:\n{step_instruction}"
-        f"{btn}\n"
+        f"{btn}"
+        f"{task_block}"
     )
 
 

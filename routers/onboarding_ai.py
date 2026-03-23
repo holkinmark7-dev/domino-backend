@@ -61,7 +61,7 @@ def handle_onboarding_ai(
 
     # Онбординг уже завершён — не обрабатывать повторно
     if user_flags.get("onboarding_complete"):
-        logger.info("[ONB] Already complete, returning guard response")
+        logger.warning("[ONB] Already complete, returning guard response")
         return JSONResponse(content={
             "ai_response": "",
             "quick_replies": [],
@@ -88,7 +88,7 @@ def handle_onboarding_ai(
 
     # 2. Handle special inputs (OCR, breed detection, avatar)
     actual_message = message_text
-    logger.info("[ONB] === NEW REQUEST === msg='%s' len=%d passport=%s breed=%s step_before_parse=%s",
+    logger.warning("[ONB] === NEW REQUEST === msg='%s' len=%d passport=%s breed=%s step_before_parse=%s",
                 message_text[:80] if message_text else "EMPTY",
                 len(message_text) if message_text else 0,
                 bool(passport_ocr_data), bool(breed_detection_data),
@@ -169,7 +169,7 @@ def handle_onboarding_ai(
 
     # 3. First _get_current_step — before parsing
     current_step = _get_current_step(collected)
-    logger.info("[ONB] BEFORE step=%s msg='%s' collected_keys=%s", current_step, actual_message[:50] if actual_message else "", [k for k in collected if not k.startswith("_")])
+    logger.warning("[ONB] BEFORE step=%s msg='%s' collected_keys=%s", current_step, actual_message[:50] if actual_message else "", [k for k in collected if not k.startswith("_")])
 
     # 4. If step is gender — compute hint BEFORE everything else
     if current_step == "gender" and not collected.get("_detected_gender_hint"):
@@ -187,9 +187,9 @@ def handle_onboarding_ai(
     if actual_message and actual_message == message_text:
         updates = _parse_user_input(actual_message, current_step, collected, client=client)
         collected.update(updates)
-        logger.info("[ONB] PARSED updates=%s", updates)
+        logger.warning("[ONB] PARSED updates=%s", updates)
     else:
-        logger.info("[ONB] PARSE SKIPPED: actual='%s' original='%s' equal=%s",
+        logger.warning("[ONB] PARSE SKIPPED: actual='%s' original='%s' equal=%s",
                      actual_message[:50] if actual_message else "NONE",
                      message_text[:50] if message_text else "NONE",
                      actual_message == message_text)
@@ -201,7 +201,7 @@ def handle_onboarding_ai(
 
     # 6. Second _get_current_step — after parsing
     current_step = _get_current_step(collected)
-    logger.info("[ONB] AFTER step=%s flags=%s", current_step, {k: v for k, v in collected.items() if k.startswith("_")})
+    logger.warning("[ONB] AFTER step=%s flags=%s", current_step, {k: v for k, v in collected.items() if k.startswith("_")})
 
     # Очистить hint если шаг изменился (успешный ввод)
     if current_step != old_step:
@@ -238,7 +238,7 @@ def handle_onboarding_ai(
         except Exception as e:
             logger.error("[ONB] owner_name save: %s", e)
 
-    logger.info("[ONB] === COMPLETE CHECK === step=%s avatar_skipped=%s avatar_url=%s breed=%s gender=%s neutered=%s",
+    logger.warning("[ONB] === COMPLETE CHECK === step=%s avatar_skipped=%s avatar_url=%s breed=%s gender=%s neutered=%s",
                 current_step,
                 collected.get("_avatar_skipped"),
                 collected.get("avatar_url"),
@@ -293,16 +293,26 @@ def handle_onboarding_ai(
 
     # 12. Compute step instruction
     step_instruction = _get_step_instruction(current_step, collected)
+    original_step_instruction = step_instruction
+
+    # --- Определяем режим ---
+    # [QUESTION] = AI пишет реакцию, вопрос из кода
+    # "Скажи РОВНО" = точный текст, без AI свободы
+    # Остальное = AI пишет всё (ЦЕЛЬ)
+    question = None
+    reaction_instruction = ""
+    if "[QUESTION]" in step_instruction:
+        parts = step_instruction.split("[QUESTION]")
+        reaction_instruction = parts[0].strip()
+        question = parts[1].strip()
+        step_instruction = reaction_instruction  # AI получит только реакцию
+
+    is_exact = step_instruction.startswith("Скажи РОВНО")
 
     # 13. Build system prompt
     system_prompt = _build_system_prompt(
-        collected, step_instruction, current_step, quick_replies
+        collected, step_instruction, current_step, quick_replies, question=question
     )
-
-    # Режим определяется инструкцией, не списком шагов
-    # "Скажи РОВНО" = точный текст, без истории, temp 0.0
-    # "ЦЕЛЬ:" = AI думает сам, с историей, temp 0.3
-    is_exact = step_instruction.startswith("Скажи РОВНО")
 
     # 14. Call Claude Haiku
     def _fix_anthropic_messages(messages):
@@ -323,6 +333,7 @@ def handle_onboarding_ai(
         ant_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
         if is_exact:
+            # Точный текст — без истории, temp 0
             ant_messages = [
                 {"role": "user", "content": actual_message or "Начни онбординг"},
             ]
@@ -335,7 +346,40 @@ def handle_onboarding_ai(
             )
             ai_text = resp.content[0].text.strip()
 
+        elif question and not reaction_instruction:
+            # Только вопрос, без реакции (species, passport, is_neutered, avatar)
+            ai_text = question
+
+        elif question and reaction_instruction:
+            # Реакция от AI + вопрос из кода (goal, breed, birth_date, gender)
+            history_rows = _load_chat_history(user_id, limit=10)
+            ant_messages = []
+            for row in history_rows:
+                role = "assistant" if row["role"] == "ai" else "user"
+                content = row.get("message") or ""
+                if content:
+                    ant_messages.append({"role": role, "content": content})
+            ant_messages.append({"role": "user", "content": actual_message or "Продолжай"})
+            ant_messages = _fix_anthropic_messages(ant_messages)
+
+            resp = ant_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                system=system_prompt,
+                messages=ant_messages,
+                temperature=0.5,
+            )
+            reaction = resp.content[0].text.strip()
+            reaction = _remove_stop_phrases(reaction)
+
+            # Убираем вопросы из реакции — AI мог добавить
+            if "?" in reaction:
+                reaction = reaction.split("?")[0].rstrip() + "."
+
+            ai_text = f"{reaction}\n\n{question}"
+
         else:
+            # Полная свобода (pet_name, owner_name переспрос, breed unknown)
             history_rows = _load_chat_history(user_id, limit=20)
             ant_messages = []
             for row in history_rows:
@@ -355,7 +399,9 @@ def handle_onboarding_ai(
             )
             ai_text = resp.content[0].text.strip()
 
-        ai_text = _remove_stop_phrases(ai_text)
+        # Пост-обработка (кроме reaction+question — уже обработано)
+        if not (question and reaction_instruction):
+            ai_text = _remove_stop_phrases(ai_text)
 
         logger.warning("[ONB] === AI RESPONSE === text='%s'", ai_text[:100] if ai_text else "EMPTY")
 
@@ -363,9 +409,8 @@ def handle_onboarding_ai(
         logger.error("[haiku_call] %s", e)
         ai_text = ""
 
-    # Уровень 3: проверка ответа AI — содержит ли ключевые элементы шага?
-    # Keyword check пропускается для ЦЕЛЬ-инструкций (свободный режим)
-    if not step_instruction.startswith("ЦЕЛЬ:"):
+    # Уровень 3: keyword check — пропускается для ЦЕЛЬ и [QUESTION]
+    if not step_instruction.startswith("ЦЕЛЬ:") and "[QUESTION]" not in original_step_instruction:
         _STEP_KEYWORDS = {
             "owner_name": ["зовут", "имя", "тебя"],
             "pet_name": ["зовут", "питом", "кличк"],
@@ -404,7 +449,7 @@ def handle_onboarding_ai(
 
     # 17. Return response
     input_type = "date_picker" if (current_step == "birth_date" and collected.get("_wants_date_picker")) else "text"
-    logger.info("[ONB] RESPONSE step=%s qr=%s input_type=%s ai_text='%s'", current_step, [q["label"] for q in quick_replies], input_type, ai_text[:80] if ai_text else "")
+    logger.warning("[ONB] RESPONSE step=%s qr=%s input_type=%s ai_text='%s'", current_step, [q["label"] for q in quick_replies], input_type, ai_text[:80] if ai_text else "")
 
     logger.warning("[ONB] === SENDING TO FRONT === qr_count=%d qr_labels=%s input_type=%s ai_text_len=%d phase=%s",
                    len(quick_replies) if isinstance(quick_replies, list) else 0,
