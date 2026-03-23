@@ -408,30 +408,27 @@ def test_non_json_gemini_response():
 # ── Test 12: Chat history loaded for Gemini context ──────────────────────────
 
 def test_chat_history_used_as_context():
-    """Chat history is passed to Anthropic as messages context (ЦЕЛЬ steps)."""
+    """Chat history is passed to Anthropic as messages context (reaction+question steps)."""
     from unittest.mock import patch as _patch
     from routers.onboarding_ai import handle_onboarding_ai
 
-    # Use breed_unknown=True — triggers ЦЕЛЬ instruction (full AI call with history)
-    flags_with_breed_unknown = {
+    # pet_name step uses reaction+question — AI gets history for reaction
+    flags_with_pet_name = {
         "onboarding_collected": {
-            "owner_name": "Марк", "pet_name": "Рекс", "goal": "Слежу за здоровьем",
-            "species": "dog", "_passport_skipped": True, "_breed_unknown": True,
+            "owner_name": "Марк",
         }
     }
 
     history_rows = [
         {"role": "ai", "message": "Привет. Как тебя зовут?"},
         {"role": "user", "message": "Марк"},
-        {"role": "ai", "message": "Какой породы Рекс?"},
-        {"role": "user", "message": "Не знаю породу"},
     ]
 
     captured_kwargs = {}
 
     def capture_create(**kwargs):
         captured_kwargs.update(kwargs)
-        return _anthropic_response("Загрузи фото Рекса — определю породу.")
+        return _anthropic_response("Марк — будем знакомы.")
 
     mock_gemini_client = MagicMock()
     mock_oai_client = MagicMock()
@@ -441,7 +438,7 @@ def test_chat_history_used_as_context():
     mock_ant_client.messages.create.side_effect = capture_create
 
     with (
-        _patch(_PATCH_FLAGS, return_value=flags_with_breed_unknown),
+        _patch(_PATCH_FLAGS, return_value=flags_with_pet_name),
         _patch(_PATCH_UPDATE),
         _patch(_PATCH_HISTORY, return_value=history_rows),
         _patch(_PATCH_SAVE_USER, return_value=None),
@@ -454,7 +451,7 @@ def test_chat_history_used_as_context():
         mock_genai.Client.return_value = mock_gemini_client
         mock_openai_mod.OpenAI.return_value = mock_oai_client
         mock_anthropic_mod.Anthropic.return_value = mock_ant_client
-        handle_onboarding_ai("user-1", "Не знаю")
+        handle_onboarding_ai("user-1", "")
 
     # Anthropic: system is separate kwarg, messages = history + user
     assert "system" in captured_kwargs, "system prompt not passed to Anthropic"

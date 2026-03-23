@@ -445,4 +445,12 @@ def _parse_user_input(msg: str, step: str, collected: dict, client=None) -> dict
             logger.info("[ONB] avatar: UNRECOGNIZED '%s' — treating as skip", raw)
             updates["_avatar_skipped"] = True
 
+    # --- Бонусный парсинг: извлечь species из любого сообщения ---
+    if raw and "species" not in collected and "species" not in updates:
+        msg_l = raw.lower()
+        if any(w in msg_l for w in ("собак", "пёс", "пес ", "щенок", "щенк")):
+            updates["species"] = "dog"
+        elif any(w in msg_l for w in ("кот ", "кошк", "котён", "кошеч")):
+            updates["species"] = "cat"
+
     return updates

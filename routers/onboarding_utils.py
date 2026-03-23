@@ -470,30 +470,42 @@ def _build_system_prompt(
 # ── Stop-phrase filter ─────────────────────────────────────────────────────────
 
 def _remove_stop_phrases(text: str) -> str:
-    """Удаляет стоп-слова из начала ответа Gemini."""
-    stop_starts = [
-        r'^Я понял[,\.]?\s*',
-        r'^Понял[,\.]?\s*',
-        r'^Отлично[,\.]?\s*',
-        r'^Хорошо[,\.]?\s*',
-        r'^Ясно[,\.]?\s*',
-        r'^Замечательно[,\.]?\s*',
-        r'^Прекрасно[,\.]?\s*',
-        r'^Зафиксировал[,\.]?\s*',
-        r'^Конечно[,\.]?\s*',
-        r'^Запомнил[,\.]?\s*',
-        r'^Записал[,\.]?\s*',
-        r'^Принял[,\.]?\s*',
-        r'^Супер[,\.]?\s*',
-        r'^Круто[,\.]?\s*',
-        r'^Здорово[,\.]?\s*',
-        r'^Класс[,\.]?\s*',
-        r'^Так[,\.]?\s*',
-        r'^Ок[,\.]?\s*',
-        r'^Разумеется[,\.]?\s*',
-        r'^Приятно познакомиться[,\.]?\s*',
-        r'^Спасибо[,\.]?\s*',
+    """Убирает стоп-фразы из начала текста. Аккуратно, без обрезки слов."""
+    if not text:
+        return text
+
+    # Стоп-фразы которые могут быть в начале предложения
+    _START_PHRASES = [
+        "Я понял", "Понял", "Отлично", "Хорошо", "Ясно",
+        "Замечательно", "Прекрасно", "Зафиксировал",
+        "Конечно", "Запомнил", "Записал", "Принял",
+        "Супер", "Круто", "Здорово", "Класс",
+        "Ок", "Окей", "Так", "Разумеется",
+        "Приятно познакомиться", "Спасибо",
+        "Правильный подход",
     ]
-    for pattern in stop_starts:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-    return text
+
+    # Сортируем по длине (длинные первые) чтобы "Окей" ловился раньше "Ок"
+    _START_PHRASES.sort(key=len, reverse=True)
+
+    result = text
+    changed = True
+    while changed:
+        changed = False
+        for phrase in _START_PHRASES:
+            # Проверяем что фраза в начале + за ней разделитель
+            pattern = re.compile(
+                r'^' + re.escape(phrase) + r'[\s,\.!\?:;—–\-]*',
+                re.IGNORECASE
+            )
+            new_result = pattern.sub('', result).strip()
+            if new_result != result and new_result:
+                result = new_result
+                changed = True
+                break
+
+    # Capitalize первую букву результата
+    if result and result[0].islower():
+        result = result[0].upper() + result[1:]
+
+    return result if result else text  # fallback на оригинал если всё вырезали

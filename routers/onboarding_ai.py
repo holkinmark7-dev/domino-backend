@@ -295,6 +295,15 @@ def handle_onboarding_ai(
     step_instruction = _get_step_instruction(current_step, collected)
     original_step_instruction = step_instruction
 
+    # --- Placeholder для поля ввода ---
+    _STEP_PLACEHOLDERS = {
+        "owner_name": "Твоё имя",
+        "pet_name": "Например: Бобик, Мурка, Рекс",
+        "breed": "Порода питомца",
+        "birth_date": "ДД.ММ.ГГГГ",
+    }
+    placeholder = _STEP_PLACEHOLDERS.get(current_step, "Написать...")
+
     # --- Определяем режим ---
     # [QUESTION] = AI пишет реакцию, вопрос из кода
     # "Скажи РОВНО" = точный текст, без AI свободы
@@ -329,6 +338,22 @@ def handle_onboarding_ai(
             fixed.insert(0, {"role": "user", "content": "..."})
         return fixed
 
+    # Few-shot: эталонный диалог Dominik — AI копирует стиль
+    _FEW_SHOT_MESSAGES = [
+        {"role": "user", "content": "Ну Марк"},
+        {"role": "assistant", "content": "Марк, расскажи — кто у тебя?"},
+        {"role": "user", "content": "У меня собака, подобрал на улице"},
+        {"role": "assistant", "content": "Подобрал — значит друг другу повезло. Как зовут?"},
+        {"role": "user", "content": "Бобик"},
+        {"role": "assistant", "content": "Бобик — с таким точно не заскучаешь. Зачем пришёл — что-то беспокоит или просто на контроль?"},
+        {"role": "user", "content": "Овчарка"},
+        {"role": "assistant", "content": "Овчарок много — немецкая, кавказская? Уточни."},
+        {"role": "user", "content": "Кавказская"},
+        {"role": "assistant", "content": "Кавказец — серьёзный зверь, уважаю. Когда родился Бобик?"},
+        {"role": "user", "content": "Примерно 5 лет"},
+        {"role": "assistant", "content": "Пять лет — самый расцвет. Мальчик или девочка?"},
+    ]
+
     try:
         ant_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
@@ -354,6 +379,7 @@ def handle_onboarding_ai(
             # Реакция от AI + вопрос из кода (goal, breed, birth_date, gender)
             history_rows = _load_chat_history(user_id, limit=10)
             ant_messages = []
+            ant_messages.extend(_FEW_SHOT_MESSAGES)
             for row in history_rows:
                 role = "assistant" if row["role"] == "ai" else "user"
                 content = row.get("message") or ""
@@ -379,9 +405,10 @@ def handle_onboarding_ai(
             ai_text = f"{reaction}\n\n{question}"
 
         else:
-            # Полная свобода (pet_name, owner_name переспрос, breed unknown)
+            # Полная свобода (pet_name, owner_name переспрос)
             history_rows = _load_chat_history(user_id, limit=20)
             ant_messages = []
+            ant_messages.extend(_FEW_SHOT_MESSAGES)
             for row in history_rows:
                 role = "assistant" if row["role"] == "ai" else "user"
                 content = row.get("message") or ""
@@ -464,6 +491,7 @@ def handle_onboarding_ai(
         "pet_id": None,
         "pet_card": None,
         "input_type": input_type,
+        "placeholder": placeholder,
         "collected": {k: v for k, v in collected.items() if not k.startswith("_")},
     })
 
